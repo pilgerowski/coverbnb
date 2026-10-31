@@ -1,0 +1,1 @@
+python3 rebalanceamento_cover_gui.py

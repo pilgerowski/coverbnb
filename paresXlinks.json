@@ -1,0 +1,9 @@
+[
+    ["XRPBNB", "https://www.binance.com/api/v3/uiKlines?symbol=XRPBNB&interval=1d&limit=1000"],
+    ["SOLBNB", "https://www.binance.com/api/v3/uiKlines?symbol=SOLBNB&interval=1d&limit=1000"],
+    ["TRXBNB", "https://www.binance.com/api/v3/uiKlines?symbol=TRXBNB&interval=1d&limit=1000"],
+    ["ZECBNB", "https://www.binance.com/api/v3/uiKlines?symbol=ZECBNB&interval=1d&limit=1000"],
+    ["DOGEBNB", "https://www.binance.com/api/v3/uiKlines?symbol=DOGEBNB&interval=1d&limit=1000"],
+    ["LTCBNB", "https://www.binance.com/api/v3/uiKlines?symbol=LTCBNB&interval=1d&limit=1000"],
+    ["BNBBRL", "https://www.binance.com/api/v3/aor/uiKlines?symbol=BNBBRL&interval=1d&limit=1000"]
+]
