@@ -27,6 +27,7 @@ class PriceFetchWorker(QtCore.QThread):
 
     finished_signal = QtCore.pyqtSignal(dict, float, str, list, dict, str, bool)
     error_signal = QtCore.pyqtSignal(str)
+    progress_signal = QtCore.pyqtSignal(str)
 
     def __init__(self, pairs_links: list, offline: bool = False):
         super().__init__()
@@ -39,11 +40,18 @@ class PriceFetchWorker(QtCore.QThread):
             bnb_brl_price = None
             bnb_brl_source = ""
             coins_order = ["BNB"]
+            total_pairs = len(self.pairs_links)
 
-            for item in self.pairs_links:
+            for idx, item in enumerate(self.pairs_links, start=1):
                 symbol = item[0].strip().upper()
                 url = item[1].strip()
-                klines, source = core.fetch_klines(symbol, url, offline=self.offline)
+                price_url = item[2].strip() if len(item) > 2 else None
+                self.progress_signal.emit(
+                    f"Buscando candles e cotação recente de {symbol} ({idx}/{total_pairs})..."
+                )
+                klines, source = core.fetch_klines(
+                    symbol, url, offline=self.offline, price_url=price_url
+                )
                 series, last_close, last_time_ms = core.parse_close_series(klines)
                 dt_str = datetime.fromtimestamp(last_time_ms / 1000.0).strftime(
                     "%Y-%m-%d %H:%M"
@@ -67,6 +75,9 @@ class PriceFetchWorker(QtCore.QThread):
                 raise RuntimeError("Par BNBBRL não encontrado em paresXlinks.json.")
 
             if not self.offline:
+                self.progress_signal.emit(
+                    "Consultando saldo real da carteira Spot na Binance (keys.json)..."
+                )
                 spot_balances, spot_msg, spot_ok = core.fetch_spot_balances(
                     coins_order
                 )
@@ -84,6 +95,245 @@ class PriceFetchWorker(QtCore.QThread):
             )
         except Exception as exc:
             self.error_signal.emit(str(exc))
+
+
+class PortfolioCalcWorker(QtCore.QThread):
+    """Thread para processar os modelos matemáticos de Tom Cover sem travar a animação da ampulheta."""
+
+    progress_signal = QtCore.pyqtSignal(str)
+    finished_signal = QtCore.pyqtSignal(list, list)
+
+    def __init__(self, relatives_matrix: list, m_active: int):
+        super().__init__()
+        self.relatives_matrix = relatives_matrix
+        self.m_active = m_active
+
+    def run(self):
+        w_crp_sub = [1.0 / self.m_active] * self.m_active
+        if not self.relatives_matrix:
+            self.finished_signal.emit(w_crp_sub, w_crp_sub)
+            return
+
+        self.progress_signal.emit(
+            "Simulando Portfólio Universal de Tom Cover (Monte Carlo Dirichlet 1/2)..."
+        )
+        w_univ_sub = core.compute_universal_weights(
+            self.relatives_matrix, num_experts=1500
+        )
+
+        self.progress_signal.emit(
+            "Otimizando Best Constant Rebalanced Portfolio (BCRP)..."
+        )
+        w_bcrp_sub = core.compute_bcrp_weights(self.relatives_matrix, iters=300)
+
+        self.finished_signal.emit(w_univ_sub, w_bcrp_sub)
+
+
+class HourglassSpinnerWidget(QtWidgets.QWidget):
+    """Widget que desenha uma ampulheta vetorial animada com anel giratório dourado."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(76, 76)
+        self._angle = 0
+        self._sand_phase = 0.0
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(40)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self):
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def _tick(self):
+        self._angle = (self._angle + 12) % 360
+        self._sand_phase = (self._sand_phase + 0.035) % 1.0
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        w, h = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+        radius = min(w, h) / 2.0 - 5.0
+
+        # 1. Anel externo de fundo
+        pen_bg = QtGui.QPen(QtGui.QColor(43, 49, 57, 220), 4.0)
+        painter.setPen(pen_bg)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        rect_ring = QtCore.QRectF(
+            cx - radius, cy - radius, radius * 2, radius * 2
+        )
+        painter.drawEllipse(rect_ring)
+
+        # 2. Arco giratório dourado (#F0B90B)
+        pen_arc = QtGui.QPen(QtGui.QColor("#F0B90B"), 4.0)
+        pen_arc.setCapStyle(QtCore.Qt.RoundCap)
+        painter.setPen(pen_arc)
+        painter.drawArc(rect_ring, int(-self._angle * 16), int(110 * 16))
+
+        # 3. Ampulheta central
+        top_y = cy - 17
+        bot_y = cy + 17
+        left_x = cx - 12
+        right_x = cx + 12
+
+        # Areia no bulbo superior (diminui conforme _sand_phase)
+        sand_top_ratio = 1.0 - self._sand_phase
+        if sand_top_ratio > 0.05:
+            sand_top_h = 14.0 * sand_top_ratio
+            sand_top_w = 10.0 * sand_top_ratio
+            sand_top_poly = QtGui.QPolygonF(
+                [
+                    QtCore.QPointF(cx, cy - 1),
+                    QtCore.QPointF(cx - sand_top_w, cy - 1 - sand_top_h),
+                    QtCore.QPointF(cx + sand_top_w, cy - 1 - sand_top_h),
+                ]
+            )
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor("#F0B90B"))
+            painter.drawPolygon(sand_top_poly)
+
+        # Filete de areia caindo no centro
+        pen_stream = QtGui.QPen(QtGui.QColor("#FCD535"), 1.6, QtCore.Qt.DotLine)
+        painter.setPen(pen_stream)
+        painter.drawLine(QtCore.QPointF(cx, cy), QtCore.QPointF(cx, bot_y - 2))
+
+        # Areia acumulada no bulbo inferior (aumenta conforme _sand_phase)
+        sand_bot_ratio = self._sand_phase
+        if sand_bot_ratio > 0.05:
+            sand_bot_h = 14.0 * sand_bot_ratio
+            sand_bot_w = 10.5 * (1.0 - 0.5 * sand_bot_ratio)
+            sand_bot_poly = QtGui.QPolygonF(
+                [
+                    QtCore.QPointF(left_x + 1.5, bot_y - 1.5),
+                    QtCore.QPointF(right_x - 1.5, bot_y - 1.5),
+                    QtCore.QPointF(cx + sand_bot_w * 0.4, bot_y - 1.5 - sand_bot_h),
+                    QtCore.QPointF(cx - sand_bot_w * 0.4, bot_y - 1.5 - sand_bot_h),
+                ]
+            )
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor("#F0B90B"))
+            painter.drawPolygon(sand_bot_poly)
+
+        # Contorno de vidro da ampulheta
+        pen_glass = QtGui.QPen(QtGui.QColor("#EAECEF"), 2.0)
+        pen_glass.setJoinStyle(QtCore.Qt.RoundJoin)
+        painter.setPen(pen_glass)
+        painter.setBrush(QtCore.Qt.NoBrush)
+
+        upper_glass = QtGui.QPolygonF(
+            [
+                QtCore.QPointF(left_x, top_y),
+                QtCore.QPointF(right_x, top_y),
+                QtCore.QPointF(cx + 1.8, cy),
+                QtCore.QPointF(cx - 1.8, cy),
+            ]
+        )
+        lower_glass = QtGui.QPolygonF(
+            [
+                QtCore.QPointF(cx - 1.8, cy),
+                QtCore.QPointF(cx + 1.8, cy),
+                QtCore.QPointF(right_x, bot_y),
+                QtCore.QPointF(left_x, bot_y),
+            ]
+        )
+        painter.drawPolygon(upper_glass)
+        painter.drawPolygon(lower_glass)
+
+        # Bases superior e inferior da ampulheta
+        pen_caps = QtGui.QPen(QtGui.QColor("#F0B90B"), 3.0)
+        pen_caps.setCapStyle(QtCore.Qt.RoundCap)
+        painter.setPen(pen_caps)
+        painter.drawLine(
+            QtCore.QPointF(left_x - 3, top_y), QtCore.QPointF(right_x + 3, top_y)
+        )
+        painter.drawLine(
+            QtCore.QPointF(left_x - 3, bot_y), QtCore.QPointF(right_x + 3, bot_y)
+        )
+
+
+class LoadingOverlay(QtWidgets.QWidget):
+    """Layer semitransparente com ampulheta animada para indicar carregamento ou processamento."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.hide()
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setAlignment(QtCore.Qt.AlignCenter)
+
+        self.card = QtWidgets.QFrame(self)
+        self.card.setFixedWidth(420)
+        self.card.setStyleSheet(
+            """
+            QFrame {
+                background-color: #1E2329;
+                border: 2px solid #F0B90B;
+                border-radius: 12px;
+            }
+            """
+        )
+        card_layout = QtWidgets.QVBoxLayout(self.card)
+        card_layout.setContentsMargins(24, 22, 24, 22)
+        card_layout.setSpacing(12)
+        card_layout.setAlignment(QtCore.Qt.AlignCenter)
+
+        self.spinner = HourglassSpinnerWidget(self.card)
+        card_layout.addWidget(self.spinner, 0, QtCore.Qt.AlignCenter)
+
+        self.lbl_title = QtWidgets.QLabel("⏳ Carregando dados...", self.card)
+        self.lbl_title.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_title.setWordWrap(True)
+        self.lbl_title.setStyleSheet(
+            "color: #F0B90B; font-size: 15px; font-weight: bold; border: none;"
+        )
+        card_layout.addWidget(self.lbl_title)
+
+        self.lbl_subtitle = QtWidgets.QLabel(
+            "Aguarde enquanto os dados são processados...", self.card
+        )
+        self.lbl_subtitle.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_subtitle.setWordWrap(True)
+        self.lbl_subtitle.setStyleSheet(
+            "color: #B7BDC6; font-size: 12px; border: none;"
+        )
+        card_layout.addWidget(self.lbl_subtitle)
+
+        layout.addWidget(self.card)
+
+    def show_overlay(self, title: str, subtitle: str = ""):
+        self.lbl_title.setText(title)
+        self.lbl_subtitle.setText(subtitle)
+        if self.parentWidget() is not None:
+            self.setGeometry(self.parentWidget().rect())
+        self.setCursor(QtCore.Qt.WaitCursor)
+        self.raise_()
+        self.show()
+        self.spinner.start()
+        QtWidgets.QApplication.processEvents()
+
+    def update_status(self, subtitle: str, title: str = None):
+        if title is not None:
+            self.lbl_title.setText(title)
+        self.lbl_subtitle.setText(subtitle)
+        QtWidgets.QApplication.processEvents()
+
+    def hide_overlay(self):
+        self.spinner.stop()
+        self.unsetCursor()
+        self.hide()
+        QtWidgets.QApplication.processEvents()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.fillRect(self.rect(), QtGui.QColor(18, 20, 26, 190))
 
 
 class CoverRebalancerWindow(QtWidgets.QMainWindow):
@@ -354,7 +604,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         tab_reb_layout.setContentsMargins(6, 6, 6, 6)
         tab_reb_layout.setSpacing(6)
 
-        self.table_positions = QtWidgets.QTableWidget(7, 10)
+        self.table_positions = QtWidgets.QTableWidget(6, 10)
         self.table_positions.setAlternatingRowColors(True)
         self.table_positions.setEditTriggers(
             QtWidgets.QAbstractItemView.NoEditTriggers
@@ -388,8 +638,8 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         header.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeToContents)
-        # Altura exata para cabeçalho (28px) + 7 linhas (7 * 26px = 182px) + borda (4px) = 214px
-        self.table_positions.setFixedHeight(214)
+        # Altura exata para cabeçalho (28px) + 6 linhas (6 * 26px = 156px) + borda (4px) = 188px
+        self.table_positions.setFixedHeight(188)
         tab_reb_layout.addWidget(self.table_positions, 0)
 
         orders_group = QtWidgets.QGroupBox(
@@ -485,6 +735,14 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Pronto.")
 
+        # Layer de ampulheta (overlay de carregamento e processamento)
+        self.loading_overlay = LoadingOverlay(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "loading_overlay") and self.loading_overlay is not None:
+            self.loading_overlay.setGeometry(self.rect())
+
     def _create_summary_card(
         self, title: str, main_text: str, sub_text: str, accent_color: str
     ) -> dict:
@@ -539,15 +797,21 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
 
         self.btn_refresh_online.setEnabled(False)
         self.status_bar.showMessage(
-            "Atualizando candles (paresXlinks.json) e saldo Spot da carteira (keys.json)..."
+            "Buscando candles na Binance (paresXlinks.json), atualizando arquivos JSON locais e saldo Spot (keys.json)..."
+        )
+        self.loading_overlay.show_overlay(
+            "⏳ Carregando Dados da Binance...",
+            "Atualizando candles diários, cotações recentes e saldo Spot...",
         )
 
         self.worker = PriceFetchWorker(self.pairs_links, offline=offline)
+        self.worker.progress_signal.connect(self.loading_overlay.update_status)
         self.worker.finished_signal.connect(self._on_prices_loaded)
         self.worker.error_signal.connect(self._on_prices_error)
         self.worker.start()
 
     def _on_prices_error(self, err_msg: str):
+        self.loading_overlay.hide_overlay()
         self.btn_refresh_online.setEnabled(True)
         self.status_bar.showMessage(f"Erro ao carregar cotações: {err_msg}")
         QtWidgets.QMessageBox.warning(
@@ -578,15 +842,17 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         )
         self.refresh_history_table()
         self._init_waiting_view()
+        self.loading_overlay.hide_overlay()
         self.status_bar.showMessage(
-            f"Candles atualizados! BNBBRL = {core.format_brl(bnb_brl_price)} | {spot_msg}. "
+            f"Candles baixados e JSONs locais atualizados! BNBBRL = {core.format_brl(bnb_brl_price)} | {spot_msg}. "
             "Clique em '⚡ Simular Ordens'."
         )
 
     def _init_waiting_view(self):
-        """Preenche a tabela apenas com os 7 ativos até o usuário clicar em 'Simular Ordens'."""
-        n_rows = min(7, len(self.coins_order))
+        """Preenche a tabela apenas com os ativos da carteira até o usuário clicar em 'Simular Ordens'."""
+        n_rows = len(self.coins_order)
         self.table_positions.setRowCount(n_rows)
+        self.table_positions.setFixedHeight(28 + n_rows * 26 + 4)
         for row_idx in range(n_rows):
             c = self.coins_order[row_idx]
             p_bnb = 1.0 if c == "BNB" else self.coin_data[c]["price_bnb"]
@@ -626,7 +892,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
 
         self.orders_text.setPlainText(
             "Saldos carregados à esquerda. Confira/ajuste as quantidades e clique no botão "
-            "'⚡ Simular Ordens' para atualizar a tabela das 7 carteiras e o passo a passo das ordens."
+            f"'⚡ Simular Ordens' para atualizar a tabela das {n_rows} carteiras e o passo a passo das ordens."
         )
 
     def _rebuild_holdings_inputs(self, spot_balances: dict = None):
@@ -710,145 +976,170 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         if not self.coins_order or self.bnb_brl_price <= 0:
             return
 
-        holdings = {
-            c: self._parse_input_float(self.qty_inputs[c].text())
-            for c in self.coins_order
-            if c in self.qty_inputs
-        }
-        active_universe = [
-            c
-            for c in self.coins_order
-            if c in self.active_checks and self.active_checks[c].isChecked()
-        ]
-        if not active_universe:
-            active_universe = list(self.coins_order)
+        self.loading_overlay.show_overlay(
+            "⏳ Processando Modelos de Tom Cover...",
+            "Calculando posições da carteira e matrizes de retornos...",
+        )
+        try:
+            holdings = {
+                c: self._parse_input_float(self.qty_inputs[c].text())
+                for c in self.coins_order
+                if c in self.qty_inputs
+            }
+            active_universe = [
+                c
+                for c in self.coins_order
+                if c in self.active_checks and self.active_checks[c].isChecked()
+            ]
+            if not active_universe:
+                active_universe = list(self.coins_order)
 
-        positions = {}
-        total_bnb = 0.0
-        for c in self.coins_order:
-            qty = holdings.get(c, 0.0)
-            p_bnb = 1.0 if c == "BNB" else self.coin_data[c]["price_bnb"]
-            v_bnb = qty * p_bnb
-            v_brl = v_bnb * self.bnb_brl_price
-            total_bnb += v_bnb
-            positions[c] = {
-                "quantidade": qty,
-                "preco_bnb": p_bnb,
-                "preco_brl": p_bnb * self.bnb_brl_price,
-                "valor_bnb": v_bnb,
-                "valor_brl": v_brl,
+            positions = {}
+            total_bnb = 0.0
+            for c in self.coins_order:
+                qty = holdings.get(c, 0.0)
+                p_bnb = 1.0 if c == "BNB" else self.coin_data[c]["price_bnb"]
+                v_bnb = qty * p_bnb
+                v_brl = v_bnb * self.bnb_brl_price
+                total_bnb += v_bnb
+                positions[c] = {
+                    "quantidade": qty,
+                    "preco_bnb": p_bnb,
+                    "preco_brl": p_bnb * self.bnb_brl_price,
+                    "valor_bnb": v_bnb,
+                    "valor_brl": v_brl,
+                }
+
+            total_brl = total_bnb * self.bnb_brl_price
+            for c in self.coins_order:
+                positions[c]["peso_atual"] = (
+                    positions[c]["valor_bnb"] / total_bnb if total_bnb > 0 else 0.0
+                )
+
+            # Matriz de preços relativos para ativos selecionados
+            non_bnb_active = [c for c in active_universe if c != "BNB"]
+            all_lengths = [
+                len(self.coin_data[c]["series"]) for c in non_bnb_active
+            ]
+            window_len = min(all_lengths) if all_lengths else 0
+            relatives_matrix = []
+            if window_len >= 2:
+                sorted_prices = {}
+                for c in non_bnb_active:
+                    s_dict = self.coin_data[c]["series"]
+                    times_sorted = sorted(s_dict.keys())[-window_len:]
+                    sorted_prices[c] = [s_dict[t] for t in times_sorted]
+                for t in range(1, window_len):
+                    row = []
+                    for c in active_universe:
+                        if c == "BNB":
+                            row.append(1.0)
+                        else:
+                            row.append(
+                                sorted_prices[c][t] / sorted_prices[c][t - 1]
+                            )
+                    relatives_matrix.append(row)
+
+            m_active = len(active_universe)
+            w_crp_sub = [1.0 / m_active] * m_active
+
+            calc_res = {"w_univ": w_crp_sub, "w_bcrp": w_crp_sub, "done": False, "min_time": False}
+            loop = QtCore.QEventLoop(self)
+
+            def _check_quit():
+                if calc_res["done"] and calc_res["min_time"]:
+                    loop.quit()
+
+            def _on_calc_done(w_u, w_b):
+                calc_res["w_univ"] = w_u
+                calc_res["w_bcrp"] = w_b
+                calc_res["done"] = True
+                _check_quit()
+
+            def _on_min_time():
+                calc_res["min_time"] = True
+                _check_quit()
+
+            calc_worker = PortfolioCalcWorker(relatives_matrix, m_active)
+            calc_worker.progress_signal.connect(self.loading_overlay.update_status)
+            calc_worker.finished_signal.connect(_on_calc_done)
+            QtCore.QTimer.singleShot(320, _on_min_time)
+            calc_worker.start()
+            loop.exec_()
+            calc_worker.wait()
+
+            w_univ_sub = calc_res["w_univ"]
+            w_bcrp_sub = calc_res["w_bcrp"]
+
+            def expand_w(w_sub):
+                out = {c: 0.0 for c in self.coins_order}
+                for c, w in zip(active_universe, w_sub):
+                    out[c] = w
+                return out
+
+            w_crp = expand_w(w_crp_sub)
+            w_univ = expand_w(w_univ_sub)
+            w_bcrp = expand_w(w_bcrp_sub)
+
+            strategy_key = self.strategy_combo.currentData() or "crp"
+            if strategy_key == "universal":
+                target_weights = w_univ
+            elif strategy_key == "bcrp":
+                target_weights = w_bcrp
+            else:
+                target_weights = w_crp
+
+            min_drift_frac = self.threshold_spin.value() / 100.0
+            suggestions = []
+            for c in self.coins_order:
+                w_cur = positions[c]["peso_atual"]
+                w_tgt = target_weights[c]
+                target_bnb = total_bnb * w_tgt
+                diff_bnb = target_bnb - positions[c]["valor_bnb"]
+                diff_brl = diff_bnb * self.bnb_brl_price
+                p_bnb = positions[c]["preco_bnb"]
+                diff_qty = diff_bnb / p_bnb if p_bnb > 0 else 0.0
+
+                if total_bnb <= 0 or abs(w_tgt - w_cur) < min_drift_frac:
+                    acao = "MANTER"
+                elif diff_bnb > 0:
+                    acao = "COMPRAR" if c != "BNB" else "RESERVAR BNB"
+                else:
+                    acao = "VENDER" if c != "BNB" else "USAR BNB"
+
+                suggestions.append(
+                    {
+                        "moeda": c,
+                        "acao": acao,
+                        "peso_atual_pct": round(w_cur * 100, 2),
+                        "peso_alvo_pct": round(w_tgt * 100, 2),
+                        "desvio_pct": round((w_cur - w_tgt) * 100, 2),
+                        "qtd_atual": positions[c]["quantidade"],
+                        "qtd_alvo": target_bnb / p_bnb if p_bnb > 0 else 0.0,
+                        "delta_qtd": diff_qty,
+                        "delta_bnb": diff_bnb,
+                        "delta_brl": diff_brl,
+                    }
+                )
+
+            self.last_computed = {
+                "strategy_key": strategy_key,
+                "total_bnb": total_bnb,
+                "total_brl": total_brl,
+                "positions": positions,
+                "w_crp": w_crp,
+                "w_univ": w_univ,
+                "w_bcrp": w_bcrp,
+                "target_weights": target_weights,
+                "suggestions": suggestions,
             }
 
-        total_brl = total_bnb * self.bnb_brl_price
-        for c in self.coins_order:
-            positions[c]["peso_atual"] = (
-                positions[c]["valor_bnb"] / total_bnb if total_bnb > 0 else 0.0
-            )
-
-        # Matriz de preços relativos para ativos selecionados
-        non_bnb_active = [c for c in active_universe if c != "BNB"]
-        all_lengths = [
-            len(self.coin_data[c]["series"]) for c in non_bnb_active
-        ]
-        window_len = min(all_lengths) if all_lengths else 0
-        relatives_matrix = []
-        if window_len >= 2:
-            sorted_prices = {}
-            for c in non_bnb_active:
-                s_dict = self.coin_data[c]["series"]
-                times_sorted = sorted(s_dict.keys())[-window_len:]
-                sorted_prices[c] = [s_dict[t] for t in times_sorted]
-            for t in range(1, window_len):
-                row = []
-                for c in active_universe:
-                    if c == "BNB":
-                        row.append(1.0)
-                    else:
-                        row.append(
-                            sorted_prices[c][t] / sorted_prices[c][t - 1]
-                        )
-                relatives_matrix.append(row)
-
-        m_active = len(active_universe)
-        w_crp_sub = [1.0 / m_active] * m_active
-        w_univ_sub = (
-            core.compute_universal_weights(relatives_matrix, num_experts=1500)
-            if relatives_matrix
-            else w_crp_sub
-        )
-        w_bcrp_sub = (
-            core.compute_bcrp_weights(relatives_matrix, iters=300)
-            if relatives_matrix
-            else w_crp_sub
-        )
-
-        def expand_w(w_sub):
-            out = {c: 0.0 for c in self.coins_order}
-            for c, w in zip(active_universe, w_sub):
-                out[c] = w
-            return out
-
-        w_crp = expand_w(w_crp_sub)
-        w_univ = expand_w(w_univ_sub)
-        w_bcrp = expand_w(w_bcrp_sub)
-
-        strategy_key = self.strategy_combo.currentData() or "crp"
-        if strategy_key == "universal":
-            target_weights = w_univ
-        elif strategy_key == "bcrp":
-            target_weights = w_bcrp
-        else:
-            target_weights = w_crp
-
-        min_drift_frac = self.threshold_spin.value() / 100.0
-        suggestions = []
-        for c in self.coins_order:
-            w_cur = positions[c]["peso_atual"]
-            w_tgt = target_weights[c]
-            target_bnb = total_bnb * w_tgt
-            diff_bnb = target_bnb - positions[c]["valor_bnb"]
-            diff_brl = diff_bnb * self.bnb_brl_price
-            p_bnb = positions[c]["preco_bnb"]
-            diff_qty = diff_bnb / p_bnb if p_bnb > 0 else 0.0
-
-            if total_bnb <= 0 or abs(w_tgt - w_cur) < min_drift_frac:
-                acao = "MANTER"
-            elif diff_bnb > 0:
-                acao = "COMPRAR" if c != "BNB" else "RESERVAR BNB"
-            else:
-                acao = "VENDER" if c != "BNB" else "USAR BNB"
-
-            suggestions.append(
-                {
-                    "moeda": c,
-                    "acao": acao,
-                    "peso_atual_pct": round(w_cur * 100, 2),
-                    "peso_alvo_pct": round(w_tgt * 100, 2),
-                    "desvio_pct": round((w_cur - w_tgt) * 100, 2),
-                    "qtd_atual": positions[c]["quantidade"],
-                    "qtd_alvo": target_bnb / p_bnb if p_bnb > 0 else 0.0,
-                    "delta_qtd": diff_qty,
-                    "delta_bnb": diff_bnb,
-                    "delta_brl": diff_brl,
-                }
-            )
-
-        self.last_computed = {
-            "strategy_key": strategy_key,
-            "total_bnb": total_bnb,
-            "total_brl": total_brl,
-            "positions": positions,
-            "w_crp": w_crp,
-            "w_univ": w_univ,
-            "w_bcrp": w_bcrp,
-            "target_weights": target_weights,
-            "suggestions": suggestions,
-        }
-
-        self._update_summary_cards(total_bnb, total_brl)
-        self._update_positions_table(positions, suggestions)
-        self._update_models_table(positions, w_crp, w_univ, w_bcrp)
-        self._update_orders_instructions(suggestions, total_bnb)
+            self._update_summary_cards(total_bnb, total_brl)
+            self._update_positions_table(positions, suggestions)
+            self._update_models_table(positions, w_crp, w_univ, w_bcrp)
+            self._update_orders_instructions(suggestions, total_bnb)
+        finally:
+            self.loading_overlay.hide_overlay()
 
     def _update_summary_cards(self, total_bnb: float, total_brl: float):
         self.card_bnb_val["main"].setText(f"{total_bnb:.6f} BNB")
@@ -873,8 +1164,9 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
                 )
 
     def _update_positions_table(self, positions: dict, suggestions: list):
-        display_coins = self.coins_order[:7]
+        display_coins = self.coins_order
         self.table_positions.setRowCount(len(display_coins))
+        self.table_positions.setFixedHeight(28 + len(display_coins) * 26 + 4)
         sug_map = {s["moeda"]: s for s in suggestions}
 
         for row_idx, c in enumerate(display_coins):

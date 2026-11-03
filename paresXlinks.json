@@ -1,9 +1,32 @@
 [
-    ["XRPBNB", "https://www.binance.com/api/v3/uiKlines?symbol=XRPBNB&interval=1d&limit=1000"],
-    ["SOLBNB", "https://www.binance.com/api/v3/uiKlines?symbol=SOLBNB&interval=1d&limit=1000"],
-    ["TRXBNB", "https://www.binance.com/api/v3/uiKlines?symbol=TRXBNB&interval=1d&limit=1000"],
-    ["ZECBNB", "https://www.binance.com/api/v3/uiKlines?symbol=ZECBNB&interval=1d&limit=1000"],
-    ["DOGEBNB", "https://www.binance.com/api/v3/uiKlines?symbol=DOGEBNB&interval=1d&limit=1000"],
-    ["LTCBNB", "https://www.binance.com/api/v3/uiKlines?symbol=LTCBNB&interval=1d&limit=1000"],
-    ["BNBBRL", "https://www.binance.com/api/v3/aor/uiKlines?symbol=BNBBRL&interval=1d&limit=1000"]
+    [
+        "XRPBNB",
+        "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=XRP&quoteCoin=BNB",
+        "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=XRP"
+    ],
+    [
+        "SOLBNB",
+        "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=SOL&quoteCoin=BNB",
+        "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=SOL"
+    ],
+    [
+        "TRXBNB",
+        "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=TRX&quoteCoin=BNB",
+        "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=TRX"
+    ],
+    [
+        "DOGEBNB",
+        "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=DOGE&quoteCoin=BNB",
+        "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=DOGE"
+    ],
+    [
+        "LTCBNB",
+        "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=LTC&quoteCoin=BNB",
+        "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=LTC"
+    ],
+    [
+        "BNBBRL",
+        "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=BNB&quoteCoin=BRL",
+        "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=BRL"
+    ]
 ]

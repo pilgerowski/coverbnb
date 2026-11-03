@@ -1,6 +1,6 @@
 # CoverBNB — Rebalanceamento de Portfólios de Thomas M. Cover para Acumulação de BNB
 
-Ferramenta em Python (modo gráfico **PyQt5** e linha de comando **CLI**) que aplica a teoria de **Portfólios Constantemente Rebalanceados (`CRP`)**, **Portfólios Universais (`Dirichlet 1/2`)** e **Melhor Portfólio Constante (`BCRP`)** de **Thomas M. Cover** para acumular **BNB** operando pares de criptomoedas na **Binance** (`XRPBNB`, `SOLBNB`, `TRXBNB`, `ZECBNB`, `DOGEBNB`, `LTCBNB` e conversão para Reais via `BNBBRL`).
+Ferramenta em Python (modo gráfico **PyQt5** e linha de comando **CLI**) que aplica a teoria de **Portfólios Constantemente Rebalanceados (`CRP`)**, **Portfólios Universais (`Dirichlet 1/2`)** e **Melhor Portfólio Constante (`BCRP`)** de **Thomas M. Cover** para acumular **BNB** operando pares de criptomoedas na **Binance** (`XRPBNB`, `SOLBNB`, `TRXBNB`, `DOGEBNB`, `LTCBNB` e conversão para Reais via `BNBBRL`).
 
 ---
 
@@ -9,13 +9,14 @@ Ferramenta em Python (modo gráfico **PyQt5** e linha de comando **CLI**) que ap
 * 📘 **[Base Teórica e Backtest (`base_teorica.md`)](base_teorica.md)** — Fundamentação matemática da Teoria de Portfólios de Thomas M. Cover, *Volatility Pumping*, diferenças entre os modelos `CRP`, `Universal (Dirichlet 1/2)` e `BCRP`, análise de *Maximum Drawdown* e resultados dos backtests em 1.000 candles diários.
 * ⚙️ **[Detalhes Técnicos e Implementação (`implementacao.md`)](implementacao.md)** — Arquitetura interna do motor matemático em Python puro, integração `HMAC-SHA256` com a API Spot da Binance, funcionamento da interface gráfica `PyQt5`, horários recomendados de operação e estrutura de arquivos.
 * 🛠️ **[Guia de Instalação e Configuração (`instalacao.md`)](instalacao.md)** — Requisitos (`Python 3.8+` e `PyQt5`), criação e configuração segura das chaves de leitura em `keys.json` e configuração dos links de candles em `paresXlinks.json`.
+* 🤖 **[Prompt Mestre de Especificação (`PROMPT.md`)](PROMPT.md)** — Prompt completo e autocontido para recriar todo o projeto do zero.
 
 ---
 
 ## 🚀 Execução Rápida
 
 ### 1. Interface Gráfica (`PyQt5`)
-Para abrir a janela gráfica (que atualiza automaticamente os candles a partir de `paresXlinks.json`, carrega o saldo Spot via `keys.json` e utiliza o modelo **Dirichlet 1/2** por padrão):
+Para abrir a janela gráfica (que atualiza automaticamente os candles e cotações recentes a partir de `paresXlinks.json`, carrega o saldo Spot via `keys.json`, utiliza o modelo **Dirichlet 1/2** por padrão e exibe um *layer* de ampulheta animada durante o carregamento de dados e o processamento dos modelos):
 
 ```bash
 python3 rebalanceamento_cover_gui.py
@@ -36,7 +37,7 @@ python3 rebalanceamento_cover.py
 
 Sintaxe geral:
 ```bash
-python3 rebalanceamento_cover.py [--gui] [--offline] [--estrategia {crp,universal,bcrp}] [--apenas-ativas] [--saldos SALDOS] [--limiar LIMIAR]
+python3 rebalanceamento_cover.py [--gui] [--offline] [--atualizar-json] [--estrategia {crp,universal,bcrp}] [--apenas-ativas] [--saldos SALDOS] [--limiar LIMIAR]
 ```
 
 ### Tabela de Parâmetros
@@ -48,7 +49,8 @@ python3 rebalanceamento_cover.py [--gui] [--offline] [--estrategia {crp,universa
 | **`--limiar`** | Número decimal (`float`, em `%`) | `1.0` | Define o **desvio mínimo percentual** entre o peso atual e o peso-alvo (`\|peso_atual - peso_alvo\| >= limiar`) para que uma ordem de `COMPRA` ou `VENDA` seja sugerida. Ativos cujo desvio seja menor que `--limiar` recebem a recomendação `MANTER`, evitando pagar taxas de corretagem (`0,10%`) em micro-oscilações. |
 | **`--saldos`** | String `CHAVE=VALOR` ou JSON | Leitura via `keys.json` / prompt interativo | Permite informar as quantidades atuais de cada moeda diretamente pela linha de comando (sem perguntas interativas no terminal). Aceita dois formatos:<br>• **Lista `MOEDA=QTD`:** `"BNB=2.5,XRP=500,SOL=3,TRX=2000"`<br>• **String JSON:** `'{"BNB": 2.5, "XRP": 500, "TRX": 2000}'`<br>Moedas omitidas na string assumem saldo `0.0`. |
 | **`--apenas-ativas`** | *(flag booleana)* | Desativado | Quando ativada, restringe o cálculo de rebalanceamento **apenas às moedas que já possuem saldo maior que zero (`> 0`) na carteira** (além do próprio `BNB`). Moedas com saldo `0` recebem peso-alvo `0%` e não geram sugestões de compra. |
-| **`--offline`** | *(flag booleana)* | Desativado | Força o script a **não** realizar requisições de rede à API da Binance, lendo exclusivamente os arquivos de candles locais (`XRPBNB.json`, `SOLBNB.json`, `TRXBNB.json`, `ZECBNB.json`, `DOGEBNB.json`, `LTCBNB.json` e `bnbbrl.json`). |
+| **`--atualizar-json`** | *(flag booleana)* | Desativado | Conecta à API da Binance a partir de `paresXlinks.json`, baixa os candles mais recentes, atualiza todos os arquivos `.json` locais no disco e encerra. |
+| **`--offline`** | *(flag booleana)* | Desativado | Força o script a **não** realizar requisições de rede à API da Binance, lendo exclusivamente os arquivos de candles locais (`XRPBNB.json`, `SOLBNB.json`, `TRXBNB.json`, `DOGEBNB.json`, `LTCBNB.json` e `BNBBRL.json`). |
 | **`-h`**, **`--help`** | *(flag booleana)* | — | Exibe o resumo de ajuda com todas as opções disponíveis e encerra. |
 
 ---
@@ -65,7 +67,7 @@ python3 rebalanceamento_cover.py [--gui] [--offline] [--estrategia {crp,universa
    python3 rebalanceamento_cover.py \
      --estrategia universal \
      --limiar 1.5 \
-     --saldos "BNB=1.5,XRP=400,TRX=3000,SOL=2.0,DOGE=1500,LTC=0,ZEC=0"
+     --saldos "BNB=1.5,XRP=400,TRX=3000,SOL=2.0,DOGE=1500,LTC=0"
    ```
 
 3. **Rebalancear somente entre as moedas que você já possui em carteira (`--apenas-ativas`), ignorando moedas zeradas:**

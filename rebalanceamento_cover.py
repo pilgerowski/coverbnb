@@ -14,6 +14,7 @@ Rebalanceamento de Portfólio de Tom Cover (Acumulação de BNB)
 """
 
 import argparse
+import gzip
 import hashlib
 import hmac
 import json
@@ -192,69 +193,370 @@ def fetch_spot_balances(coins_order: list, keys_path: str = KEYS_FILE):
 
 
 def find_local_json(symbol: str) -> str:
-    """Encontra o arquivo JSON local correspondente ao símbolo (case-insensitive)."""
-    exact = os.path.join(BASE_DIR, f"{symbol}.json")
+    """Encontra o arquivo JSON local correspondente ao símbolo (padronizado em MAIÚSCULAS: <SYMBOL>.json)."""
+    exact = os.path.join(BASE_DIR, f"{symbol.upper()}.json")
     if os.path.exists(exact):
         return exact
-    lower = os.path.join(BASE_DIR, f"{symbol.lower()}.json")
-    if os.path.exists(lower):
-        return lower
     for fname in os.listdir(BASE_DIR):
         if fname.lower() == f"{symbol.lower()}.json":
             return os.path.join(BASE_DIR, fname)
     return exact
 
 
-def fetch_klines(symbol: str, url: str, offline: bool = False, update_local: bool = True):
+def save_local_klines(symbol: str, data: list) -> str:
+    """Grava os candles atualizados no arquivo JSON local (e sincroniza em coverbnb/ se existir)."""
+    local_path = find_local_json(symbol)
+    tmp_path = f"{local_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fp:
+        json.dump(data, fp)
+        fp.flush()
+        os.fsync(fp.fileno())
+    os.replace(tmp_path, local_path)
+
+    # Se existir a subpasta coverbnb/, mantém o JSON lá sincronizado também
+    coverbnb_dir = os.path.join(BASE_DIR, "coverbnb")
+    if os.path.isdir(coverbnb_dir):
+        bname = os.path.basename(local_path)
+        cb_path = os.path.join(coverbnb_dir, bname)
+        try:
+            with open(cb_path, "w", encoding="utf-8") as fp:
+                json.dump(data, fp)
+        except OSError:
+            pass
+    return local_path
+
+
+def normalize_klines_payload(payload) -> list:
     """
-    Busca os candles mais recentes a partir do link de paresXlinks.json.
-    Se a URL falhar (ex: sem internet ou erro no endpoint), faz fallback para o arquivo JSON local.
+    Normaliza a resposta tanto do endpoint OTC/Convert:
+      https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=...&quoteCoin=...
+    quanto do endpoint Spot (/api/v3/uiKlines ou /api/v3/klines) para o formato padrão de lista de candles:
+      [[open_time_ms, open, high, low, close, volume, close_time_ms, ...], ...]
+    """
+    raw_list = None
+    if isinstance(payload, list):
+        raw_list = payload
+    elif isinstance(payload, dict):
+        data_field = payload.get("data")
+        if isinstance(data_field, list):
+            raw_list = data_field
+        elif isinstance(data_field, dict):
+            for key in ("klines", "list", "rows", "candles", "items", "data"):
+                if isinstance(data_field.get(key), list):
+                    raw_list = data_field[key]
+                    break
+            if raw_list is None:
+                for val in data_field.values():
+                    if isinstance(val, list) and len(val) > 0:
+                        raw_list = val
+                        break
+        else:
+            for key in ("klines", "list", "rows", "candles"):
+                if isinstance(payload.get(key), list):
+                    raw_list = payload[key]
+                    break
+
+    if not isinstance(raw_list, list) or len(raw_list) == 0:
+        return []
+
+    normalized = []
+    for row in raw_list:
+        try:
+            if isinstance(row, (list, tuple)):
+                if len(row) >= 5:
+                    t = int(float(row[0]))
+                    if t < 10**11:
+                        t *= 1000
+                    c_val = str(row[4])
+                    o_val = str(row[1]) if row[1] is not None else c_val
+                    h_val = str(row[2]) if row[2] is not None else c_val
+                    l_val = str(row[3]) if row[3] is not None else c_val
+                    ct = int(float(row[6])) if len(row) > 6 and row[6] is not None else t
+                    if ct < 10**11:
+                        ct *= 1000
+                    normalized.append([t, o_val, h_val, l_val, c_val, "0", ct])
+                elif len(row) >= 2:
+                    t = int(float(row[0]))
+                    if t < 10**11:
+                        t *= 1000
+                    c_val = str(row[-1])
+                    normalized.append([t, c_val, c_val, c_val, c_val, "0", t])
+            elif isinstance(row, dict):
+                t_raw = (
+                    row.get("openTime")
+                    or row.get("startTime")
+                    or row.get("time")
+                    or row.get("timestamp")
+                    or row.get("t")
+                    or row.get("date")
+                    or row.get("closeTime")
+                    or row.get("endTime")
+                    or row.get("T")
+                )
+                c_raw = (
+                    row.get("close")
+                    or row.get("closePrice")
+                    or row.get("c")
+                    or row.get("price")
+                    or row.get("rate")
+                    or row.get("value")
+                )
+                if t_raw is None or c_raw is None:
+                    continue
+                t = int(float(t_raw))
+                if t < 10**11:
+                    t *= 1000
+                c_val = str(c_raw)
+                o_val = str(row.get("open") or row.get("openPrice") or row.get("o") or c_val)
+                h_val = str(row.get("high") or row.get("highPrice") or row.get("h") or c_val)
+                l_val = str(row.get("low") or row.get("lowPrice") or row.get("l") or c_val)
+                ct_raw = row.get("closeTime") or row.get("endTime") or row.get("T") or t
+                ct = int(float(ct_raw))
+                if ct < 10**11:
+                    ct *= 1000
+                normalized.append([t, o_val, h_val, l_val, c_val, "0", ct])
+        except Exception:
+            continue
+
+    normalized.sort(key=lambda item: item[0])
+    return normalized
+
+
+def fetch_latest_pair_price(
+    symbol: str, price_url: str = None, reference_close: float = None
+):
+    """
+    Busca o valor mais recente do par a partir do link configurado em paresXlinks.json:
+      https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=XRP
+    Alinha automaticamente a orientação (direta vs. inversa 1/x) com base no último fechamento
+    dos candles (reference_close), garantindo que <MOEDA>BNB esteja sempre em BNB por 1 MOEDA
+    e BNBBRL esteja em BRL por 1 BNB.
+    """
+    sym_up = symbol.upper()
+    urls = []
+    if price_url:
+        urls.append(price_url)
+
+    if sym_up.endswith("BNB") and len(sym_up) > 3:
+        coin = sym_up[:-3]
+        u1 = f"https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin={coin}"
+        u2 = f"https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin={coin}&toCoin=BNB"
+        for u in (u1, u2):
+            if u not in urls:
+                urls.append(u)
+    elif sym_up.endswith("BRL") and len(sym_up) > 3:
+        coin = sym_up[:-3]
+        u1 = f"https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin={coin}&toCoin=BRL"
+        u2 = f"https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BRL&toCoin={coin}"
+        for u in (u1, u2):
+            if u not in urls:
+                urls.append(u)
+
+    urls.append(f"https://api.binance.com/api/v3/ticker/price?symbol={sym_up}")
+
+    def _orient_price(candidates: list, url_used: str):
+        valid = [c for c in candidates if c is not None and c > 0]
+        if not valid:
+            return None
+        if reference_close and reference_close > 0:
+            best_val = None
+            best_dist = float("inf")
+            for c in valid:
+                for cand in (c, 1.0 / c):
+                    dist = abs(math.log(cand / reference_close))
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_val = cand
+            if best_val is not None and best_dist < math.log(5.0):
+                return best_val
+        # Caso não haja reference_close, orienta pelos parâmetros fromCoin/toCoin
+        raw = valid[0]
+        if sym_up.endswith("BNB") and "fromCoin=BNB" in url_used and raw > 0:
+            return 1.0 / raw
+        return raw
+
+    priority_keys = (
+        "inversePrice",
+        "price",
+        "lastPrice",
+        "closePrice",
+        "close",
+        "exchangeRate",
+        "rate",
+        "toCoinAmount",
+        "quotation",
+        "value",
+    )
+    skip_tokens = ("change", "percent", "pct", "time", "date", "code", "24h", "vol", "high", "low", "open")
+
+    for candidate_url in urls:
+        try:
+            req = urllib.request.Request(
+                candidate_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+                    "Accept": "application/json, text/plain, */*",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                raw_bytes = resp.read()
+                if raw_bytes[:2] == b"\x1f\x8b":
+                    raw_bytes = gzip.decompress(raw_bytes)
+                payload = json.loads(raw_bytes.decode("utf-8"))
+
+                data = payload.get("data", payload) if isinstance(payload, dict) else payload
+                candidates = []
+                if isinstance(data, (int, float, str)):
+                    try:
+                        candidates.append(float(data))
+                    except ValueError:
+                        pass
+                elif isinstance(data, dict):
+                    for k in priority_keys:
+                        if k in data and data[k] is not None:
+                            try:
+                                candidates.append(float(data[k]))
+                            except (ValueError, TypeError):
+                                pass
+                    for k, v in data.items():
+                        kl = str(k).lower()
+                        if any(tok in kl for tok in skip_tokens):
+                            continue
+                        if isinstance(v, (int, float, str)):
+                            try:
+                                candidates.append(float(v))
+                            except (ValueError, TypeError):
+                                pass
+
+                oriented = _orient_price(candidates, candidate_url)
+                if oriented is not None and oriented > 0:
+                    return oriented
+        except Exception:
+            continue
+    return None
+
+
+def fetch_klines(
+    symbol: str,
+    url: str,
+    offline: bool = False,
+    update_local: bool = True,
+    price_url: str = None,
+):
+    """
+    1) Busca os candles mais recentes na Binance a partir do link de paresXlinks.json
+       (suportando tanto o endpoint OTC /bapi/margin/v1/friendly/new-otc/pair-klines quanto /api/v3/uiKlines).
+    2) Busca o preço mais recente do par via new-otc/pair-price-change (price_url) e atualiza o fechamento atual.
+    3) Atualiza o arquivo .json local correspondente no disco.
+    4) Lê e retorna os candles a partir do arquivo .json local atualizado.
     """
     local_path = find_local_json(symbol)
     urls_to_try = [url]
-    # Caso a URL tenha '/api/v3/aor/uiKlines', tenta também '/api/v3/uiKlines'
-    if "/api/v3/aor/uiKlines" in url:
-        urls_to_try.append(url.replace("/api/v3/aor/uiKlines", "/api/v3/uiKlines"))
 
+    # Caso symbol seja de 6+ letras terminando em BNB ou BRL, garante também o link new-otc/pair-klines
+    sym_up = symbol.upper()
+    if sym_up.endswith("BNB") and len(sym_up) > 3:
+        base_c, quote_c = sym_up[:-3], "BNB"
+        otc_url = f"https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin={base_c}&quoteCoin={quote_c}"
+        if otc_url not in urls_to_try:
+            urls_to_try.insert(0, otc_url)
+    elif sym_up.endswith("BRL") and len(sym_up) > 3:
+        base_c, quote_c = sym_up[:-3], "BRL"
+        otc_url = f"https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin={base_c}&quoteCoin={quote_c}"
+        if otc_url not in urls_to_try:
+            urls_to_try.insert(0, otc_url)
+
+    # Fallbacks Spot públicos da Binance (caso o par seja fiduciário como BNBBRL e não exista no OTC)
+    for host in (
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://www.binance.com",
+    ):
+        for ep in ("/api/v3/uiKlines", "/api/v3/klines"):
+            candidate = f"{host}{ep}?symbol={sym_up}&interval=1d&limit=1000"
+            if candidate not in urls_to_try:
+                urls_to_try.append(candidate)
+
+    updated_online = False
+    price_updated_online = False
     if not offline:
         for candidate_url in urls_to_try:
             try:
                 req = urllib.request.Request(
                     candidate_url,
-                    headers={"User-Agent": "Mozilla/5.0 (CoverPortfolioRebalancer/1.0)"},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+                        "Accept": "application/json, text/plain, */*",
+                    },
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     raw_bytes = resp.read()
-                    data = json.loads(raw_bytes.decode("utf-8"))
-                    if isinstance(data, list) and len(data) > 0:
+                    if raw_bytes[:2] == b"\x1f\x8b":
+                        raw_bytes = gzip.decompress(raw_bytes)
+                    payload = json.loads(raw_bytes.decode("utf-8"))
+                    data = normalize_klines_payload(payload)
+                    if len(data) > 0:
+                        ref_close = float(data[-1][4])
+                        latest_p = fetch_latest_pair_price(
+                            symbol, price_url=price_url, reference_close=ref_close
+                        )
+                        if latest_p is not None and latest_p > 0:
+                            data[-1][4] = f"{latest_p:.8f}" if latest_p < 100 else f"{latest_p:.2f}"
+                            data[-1][6] = int(time.time() * 1000)
+                            price_updated_online = True
                         if update_local:
                             try:
-                                with open(local_path, "w", encoding="utf-8") as fp:
-                                    json.dump(data, fp)
+                                local_path = save_local_klines(symbol, data)
+                                updated_online = True
                             except OSError:
                                 pass
-                        return data, "ONLINE (Binance API)"
+                        if not os.path.exists(local_path):
+                            return data, "ONLINE (Binance API)"
+                        break
             except Exception:
                 continue
 
-    # Fallback para o arquivo local
+    # Lê sempre a partir do arquivo JSON local (já atualizado quando online)
     if os.path.exists(local_path):
         with open(local_path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        return data, f"LOCAL ({os.path.basename(local_path)})"
+            raw_local = json.load(fp)
+        data = normalize_klines_payload(raw_local)
+        if not offline and not price_updated_online and len(data) > 0:
+            ref_close = float(data[-1][4])
+            latest_p = fetch_latest_pair_price(
+                symbol, price_url=price_url, reference_close=ref_close
+            )
+            if latest_p is not None and latest_p > 0:
+                data[-1][4] = f"{latest_p:.8f}" if latest_p < 100 else f"{latest_p:.2f}"
+                data[-1][6] = int(time.time() * 1000)
+                price_updated_online = True
+                if update_local:
+                    try:
+                        save_local_klines(symbol, data)
+                    except OSError:
+                        pass
+        bname = os.path.basename(local_path)
+        if updated_online and price_updated_online:
+            return data, f"ONLINE -> {bname} + cotação atualizada"
+        if updated_online:
+            return data, f"ONLINE -> {bname} atualizado"
+        if price_updated_online:
+            return data, f"LOCAL ({bname}) + cotação ONLINE"
+        return data, f"LOCAL ({bname})"
 
     raise RuntimeError(f"Não foi possível obter dados para {symbol} (nem online, nem em {local_path}).")
 
 
 def parse_close_series(klines: list) -> dict:
     """Retorna dicionário {timestamp_ms: close_price} e o último preço de fechamento."""
+    norm = normalize_klines_payload(klines) if not isinstance(klines, list) or (klines and isinstance(klines[0], dict)) else klines
     series = {}
-    for row in klines:
+    for row in norm:
         t = int(row[0])
         c = float(row[4])
         series[t] = c
-    last_close = float(klines[-1][4])
-    last_time_ms = int(klines[-1][6]) if len(klines[-1]) > 6 else int(klines[-1][0])
+    last_close = float(norm[-1][4])
+    last_time_ms = int(norm[-1][6]) if len(norm[-1]) > 6 else int(norm[-1][0])
     return series, last_close, last_time_ms
 
 
@@ -392,6 +694,11 @@ def main():
         help="Usa apenas os arquivos .json locais sem consultar a internet",
     )
     parser.add_argument(
+        "--atualizar-json",
+        action="store_true",
+        help="Apenas busca os candles da Binance, atualiza os arquivos .json locais e encerra",
+    )
+    parser.add_argument(
         "--estrategia",
         choices=["crp", "universal", "bcrp"],
         default=None,
@@ -430,7 +737,11 @@ def main():
     print("=" * 78)
     print("  REBALANCEADOR DE PORTFÓLIO DE TOM COVER — OBJETIVO: ACUMULAR BNB")
     print("=" * 78)
-    print("\n[1/4] Carregando cotações a partir de paresXlinks.json...")
+    print(
+        "\n[1/4] Buscando candles (paresXlinks.json) e atualizando arquivos JSON locais..."
+        if not args.offline
+        else "\n[1/4] Carregando candles dos arquivos JSON locais (modo offline)..."
+    )
 
     coin_Data = {}
     bnb_brl_price = None
@@ -438,7 +749,10 @@ def main():
 
     for item in pairs_links:
         symbol, url = item[0].strip().upper(), item[1].strip()
-        klines, source = fetch_klines(symbol, url, offline=args.offline)
+        price_url = item[2].strip() if len(item) > 2 else None
+        klines, source = fetch_klines(
+            symbol, url, offline=args.offline, price_url=price_url
+        )
         series, last_close, last_time_ms = parse_close_series(klines)
         dt_str = datetime.fromtimestamp(last_time_ms / 1000.0).strftime("%Y-%m-%d %H:%M")
 
@@ -456,6 +770,10 @@ def main():
                 "source": source,
             }
             print(f"  • {symbol:8s}: {last_close:14.8f} BNB | Candle: {dt_str} | Fonte: {source}")
+
+    if args.atualizar_json:
+        print("\n✓ Todos os arquivos JSON locais de candles foram atualizados com sucesso!")
+        return
 
     if bnb_brl_price is None:
         raise RuntimeError("Par BNBBRL não encontrado em paresXlinks.json.")

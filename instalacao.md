@@ -61,15 +61,41 @@ O arquivo `paresXlinks.json` define os pares cotados em `BNB` que compõem o por
 
 ```json
 [
-  ["XRPBNB", "https://api.binance.com/api/v3/uiKlines?symbol=XRPBNB&interval=1d&limit=1000"],
-  ["SOLBNB", "https://api.binance.com/api/v3/uiKlines?symbol=SOLBNB&interval=1d&limit=1000"],
-  ["TRXBNB", "https://api.binance.com/api/v3/uiKlines?symbol=TRXBNB&interval=1d&limit=1000"],
-  ["ZECBNB", "https://api.binance.com/api/v3/uiKlines?symbol=ZECBNB&interval=1d&limit=1000"],
-  ["DOGEBNB", "https://api.binance.com/api/v3/uiKlines?symbol=DOGEBNB&interval=1d&limit=1000"],
-  ["LTCBNB", "https://api.binance.com/api/v3/uiKlines?symbol=LTCBNB&interval=1d&limit=1000"],
-  ["BNBBRL", "https://api.binance.com/api/v3/uiKlines?symbol=BNBBRL&interval=1d&limit=1000"]
+  [
+    "XRPBNB",
+    "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=XRP&quoteCoin=BNB",
+    "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=XRP"
+  ],
+  [
+    "SOLBNB",
+    "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=SOL&quoteCoin=BNB",
+    "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=SOL"
+  ],
+  [
+    "TRXBNB",
+    "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=TRX&quoteCoin=BNB",
+    "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=TRX"
+  ],
+  [
+    "DOGEBNB",
+    "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=DOGE&quoteCoin=BNB",
+    "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=DOGE"
+  ],
+  [
+    "LTCBNB",
+    "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=LTC&quoteCoin=BNB",
+    "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=LTC"
+  ],
+  [
+    "BNBBRL",
+    "https://www.binance.com/bapi/margin/v1/friendly/new-otc/pair-klines?interval=1d&baseCoin=BNB&quoteCoin=BRL",
+    "https://www.binance.com/bapi/margin/v1/public/new-otc/pair-price-change?fromCoin=BNB&toCoin=BRL"
+  ]
 ]
 ```
 
-Ao iniciar o script (com conexão à internet), os últimos 1.000 candles diários de cada par são baixados automaticamente a partir desses links e salvos nos arquivos `.json` correspondentes (`XRPBNB.json`, `SOLBNB.json`, etc.) para uso imediato e fallback offline.
+Ao iniciar o script (com conexão à internet), para cada entrada `[SIMBOLO, URL_CANDLES, URL_PRECO_RECENTE]`:
+1. Os candles diários (`1d`) são baixados a partir do **1º link** (`new-otc/pair-klines`);
+2. A cotação mais recente em tempo real é obtida a partir do **2º link** (`new-otc/pair-price-change`);
+3. Os dados atualizados são gravados nos arquivos `.json` locais correspondentes (`XRPBNB.json`, `SOLBNB.json`, `TRXBNB.json`, `DOGEBNB.json`, `LTCBNB.json` e `BNBBRL.json`) para uso imediato e *fallback* offline.
 
