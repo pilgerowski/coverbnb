@@ -15,8 +15,7 @@ O sistema é dividido em dois módulos principais sem dependências externas de 
    * Mantém a persistência histórica de todas as leituras e simulações em `historico_carteira.json`.
 2. **`rebalanceamento_cover_gui.py` (Interface Gráfica em PyQt5):**
    * Interface desktop responsiva com tema escuro (inspirado no layout da Binance).
-   * Executa a atualização de candles, cotações recentes e leitura da conta Spot em *thread* separada (`PriceFetchWorker` via `QThread`) na inicialização do programa.
-   * Calcula a carteira e o passo a passo de ordens sob demanda ao clicar em **"⚡ Simular Ordens"** utilizando uma *thread* dedicada (`PortfolioCalcWorker`).
+   * Executa a atualização de candles, cotações recentes e leitura da conta Spot em *thread* separada (`PriceFetchWorker` via `QThread`) na inicialização do programa e já simula automaticamente as ordens em seguida (`PortfolioCalcWorker`), mantendo os botões para testes exploratórios e atualização de saldo.
    * Exibe um *layer* modal semitransparente com ampulheta vetorial animada (`LoadingOverlay` e `HourglassSpinnerWidget`) tanto durante a busca de dados da Binance quanto durante o processamento matemático dos modelos de Tom Cover.
 
 ---
@@ -79,12 +78,12 @@ $$
 * **Geometria Adaptativa:** Consulta `QApplication.primaryScreen().availableGeometry()` para iniciar ajustada à largura do monitor (`minWidth: 720px`).
 * **Painel Esquerdo de Configuração e Saldos:**
   * Modelo **Portfólio Universal (Dirichlet 1/2)** selecionado como padrão (`default`).
-  * Controle de **Limiar Mínimo de Desvio (`%`)** para filtrar micro-ordens e economizar taxas.
+  * Controle de **Limiar Mínimo de Desvio (`%`)** iniciado em **`1,5%`** por padrão para filtrar micro-ordens e economizar taxas.
   * 6 linhas de ativos com *checkbox* individual (para incluir/excluir a moeda do rebalanceamento) e campo de quantidade (iniciado em `0` para preenchimento manual ou populado automaticamente via API Spot).
 * **Painel Direito de Carteiras e Simulação:**
   * Tabela superior com altura ajustada para as **6 carteiras (`188px`)**, exibindo Saldo Atual, Preço em BNB, Valor em BNB, Valor em R$, Peso Atual, Peso Alvo, Diferença e Ação.
   * Painel inferior amplo para **"Simular Ordens — Passo a Passo na Binance"**, ordenando primeiro todas as **VENDAS** (para gerar caixa em BNB) e depois todas as **COMPRAS** (descontando a taxa spot de `0,10%`).
-  * Tanto a tabela das carteiras quanto o passo a passo das ordens só são atualizados após clicar no botão **"⚡ Simular Ordens"**.
+  * A simulação da carteira e do passo a passo das ordens é executada automaticamente logo após carregar os saldos na inicialização (ou ao clicar em **"🔄 Atualizar Saldo"**), podendo ser recalculada a qualquer momento com o botão **"⚡ Simular Ordens"** para testes exploratórios com os valores e parâmetros.
 * **Layer de Ampulheta Animada (`LoadingOverlay` & `HourglassSpinnerWidget`):**
   * **`HourglassSpinnerWidget`:** Desenha em tempo real (`QPainter` a `25 FPS`) uma ampulheta vetorial com anel giratório dourado (`#F0B90B`) e fluxo contínuo de areia escorrendo do bulbo superior para o inferior.
   * **`LoadingOverlay`:** Camada modal semitransparente (`rgba(18, 20, 26, 190)`) que cobre toda a janela principal, altera o cursor para `WaitCursor` e impede cliques acidentais enquanto operações estão em andamento:

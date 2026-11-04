@@ -17,15 +17,57 @@ import os
 import sys
 from datetime import datetime
 
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.wayland*=false")
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 import rebalanceamento_cover as core
 
 
-class PriceFetchWorker(QtCore.QThread):
-    """Thread em segundo plano para buscar cotações e saldo Spot (keys.json) sem travar a interface."""
+def _compute_models_for_subset(
+    coin_data: dict, active_universe: list
+) -> tuple:
+    """Calcula (w_crp, w_univ, w_bcrp) para o subconjunto de moedas ativas."""
+    non_bnb_active = [c for c in active_universe if c != "BNB"]
+    all_lengths = [
+        len(coin_data[c]["series"]) for c in non_bnb_active if c in coin_data
+    ]
+    window_len = min(all_lengths) if all_lengths else 0
+    relatives_matrix = []
+    if window_len >= 2:
+        sorted_prices = {}
+        for c in non_bnb_active:
+            s_dict = coin_data[c]["series"]
+            times_sorted = sorted(s_dict.keys())[-window_len:]
+            sorted_prices[c] = [s_dict[t] for t in times_sorted]
+        for t in range(1, window_len):
+            row = []
+            for c in active_universe:
+                if c == "BNB":
+                    row.append(1.0)
+                else:
+                    row.append(sorted_prices[c][t] / sorted_prices[c][t - 1])
+            relatives_matrix.append(row)
 
-    finished_signal = QtCore.pyqtSignal(dict, float, str, list, dict, str, bool)
+    m_active = len(active_universe)
+    w_crp_sub = [1.0 / m_active] * m_active
+    if relatives_matrix:
+        w_univ_sub = core.compute_universal_weights(
+            relatives_matrix, num_experts=1500
+        )
+        w_bcrp_sub = core.compute_bcrp_weights(relatives_matrix, iters=300)
+    else:
+        w_univ_sub = list(w_crp_sub)
+        w_bcrp_sub = list(w_crp_sub)
+    return w_crp_sub, w_univ_sub, w_bcrp_sub
+
+
+class PriceFetchWorker(QtCore.QThread):
+    """Thread em segundo plano para buscar cotações, saldo Spot (keys.json) e pré-calcular os modelos de Cover."""
+
+    finished_signal = QtCore.pyqtSignal(
+        dict, float, str, list, dict, str, bool, tuple
+    )
     error_signal = QtCore.pyqtSignal(str)
     progress_signal = QtCore.pyqtSignal(str)
 
@@ -84,6 +126,11 @@ class PriceFetchWorker(QtCore.QThread):
             else:
                 spot_balances, spot_msg, spot_ok = {}, "Modo offline", False
 
+            self.progress_signal.emit(
+                "Processando modelos de Tom Cover (CRP, Portfólio Universal e BCRP)..."
+            )
+            initial_weights = _compute_models_for_subset(coin_data, coins_order)
+
             self.finished_signal.emit(
                 coin_data,
                 bnb_brl_price,
@@ -92,41 +139,10 @@ class PriceFetchWorker(QtCore.QThread):
                 spot_balances,
                 spot_msg,
                 spot_ok,
+                initial_weights,
             )
         except Exception as exc:
             self.error_signal.emit(str(exc))
-
-
-class PortfolioCalcWorker(QtCore.QThread):
-    """Thread para processar os modelos matemáticos de Tom Cover sem travar a animação da ampulheta."""
-
-    progress_signal = QtCore.pyqtSignal(str)
-    finished_signal = QtCore.pyqtSignal(list, list)
-
-    def __init__(self, relatives_matrix: list, m_active: int):
-        super().__init__()
-        self.relatives_matrix = relatives_matrix
-        self.m_active = m_active
-
-    def run(self):
-        w_crp_sub = [1.0 / self.m_active] * self.m_active
-        if not self.relatives_matrix:
-            self.finished_signal.emit(w_crp_sub, w_crp_sub)
-            return
-
-        self.progress_signal.emit(
-            "Simulando Portfólio Universal de Tom Cover (Monte Carlo Dirichlet 1/2)..."
-        )
-        w_univ_sub = core.compute_universal_weights(
-            self.relatives_matrix, num_experts=1500
-        )
-
-        self.progress_signal.emit(
-            "Otimizando Best Constant Rebalanced Portfolio (BCRP)..."
-        )
-        w_bcrp_sub = core.compute_bcrp_weights(self.relatives_matrix, iters=300)
-
-        self.finished_signal.emit(w_univ_sub, w_bcrp_sub)
 
 
 class HourglassSpinnerWidget(QtWidgets.QWidget):
@@ -317,19 +333,16 @@ class LoadingOverlay(QtWidgets.QWidget):
         self.raise_()
         self.show()
         self.spinner.start()
-        QtWidgets.QApplication.processEvents()
 
     def update_status(self, subtitle: str, title: str = None):
         if title is not None:
             self.lbl_title.setText(title)
         self.lbl_subtitle.setText(subtitle)
-        QtWidgets.QApplication.processEvents()
 
     def hide_overlay(self):
         self.spinner.stop()
         self.unsetCursor()
         self.hide()
-        QtWidgets.QApplication.processEvents()
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
@@ -359,6 +372,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         self.coins_order = ["BNB"]
         self.qty_inputs = {}
         self.active_checks = {}
+        self.weights_cache = {}
         self.last_computed = None
 
         self._apply_dark_theme()
@@ -490,7 +504,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         self.card_bnb_val = self._create_summary_card(
             "Total BNB:",
             "0.000000 BNB",
-            "Meta: acumular BNBs via bombeamento de volatilidade",
+            f"Meta: acumular {core.META_BNB:g} BNBs via bombeamento de volatilidade",
             "#F0B90B",
         )
         self.card_brl_val = self._create_summary_card(
@@ -557,7 +571,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         self.threshold_spin.setSingleStep(0.5)
         self.threshold_spin.setDecimals(1)
         self.threshold_spin.setSuffix(" %")
-        self.threshold_spin.setValue(1.0)
+        self.threshold_spin.setValue(1.5)
         self.threshold_spin.setToolTip(
             "Só sugere COMPRA ou VENDA se o peso do ativo desviar mais do que este percentual."
         )
@@ -576,21 +590,50 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         )
         self.btn_apply_sim.clicked.connect(self.recalculate_portfolio)
 
-        self.btn_save_snapshot = QtWidgets.QPushButton("💾 Salvar Registro")
-        self.btn_save_snapshot.setObjectName("primaryBtn")
-        self.btn_save_snapshot.clicked.connect(self.save_current_snapshot)
-
-        self.btn_refresh_online = QtWidgets.QPushButton(
-            "🔄 Atualizar Candles & Saldo"
-        )
+        self.btn_refresh_online = QtWidgets.QPushButton("🔄 Atualizar Saldo")
         self.btn_refresh_online.clicked.connect(
             lambda: self._load_links_and_fetch(offline=False)
         )
 
+        self.btn_save_snapshot = QtWidgets.QPushButton("💾 Salvar Registro")
+        self.btn_save_snapshot.setObjectName("primaryBtn")
+        self.btn_save_snapshot.clicked.connect(self.save_current_snapshot)
+
         btn_grid.addWidget(self.btn_apply_sim, 0, 0, 1, 2)
-        btn_grid.addWidget(self.btn_save_snapshot, 1, 0)
-        btn_grid.addWidget(self.btn_refresh_online, 1, 1)
+        btn_grid.addWidget(self.btn_refresh_online, 1, 0)
+        btn_grid.addWidget(self.btn_save_snapshot, 1, 1)
         left_layout.addLayout(btn_grid)
+
+        # Box: Meta de Acumulação (abaixo dos botões Atualizar Saldo / Salvar Registro)
+        self.goal_group = QtWidgets.QGroupBox(
+            f"3. Meta de Acumulação ({core.META_BNB:g} BNB)"
+        )
+        goal_layout = QtWidgets.QVBoxLayout(self.goal_group)
+        goal_layout.setSpacing(4)
+        goal_layout.setContentsMargins(8, 10, 8, 8)
+
+        self.lbl_goal_main = QtWidgets.QLabel(
+            f"0.000000 / {core.META_BNB:g} BNB (0.00%)"
+        )
+        self.lbl_goal_main.setStyleSheet(
+            "color: #F0B90B; font-size: 13px; font-weight: bold; border: none;"
+        )
+        self.lbl_goal_sub = QtWidgets.QLabel(
+            "Faltam 10.00 dobras (2x) | Próx. marco: 0.5 BNB"
+        )
+        self.lbl_goal_sub.setStyleSheet(
+            "color: #B7BDC6; font-size: 11px; border: none;"
+        )
+        self.lbl_goal_eta = QtWidgets.QLabel(
+            "📅 Data provável (0.5 BNB): aguardando simulação"
+        )
+        self.lbl_goal_eta.setStyleSheet(
+            "color: #0ECB81; font-size: 11px; font-weight: bold; border: none;"
+        )
+        goal_layout.addWidget(self.lbl_goal_main)
+        goal_layout.addWidget(self.lbl_goal_sub)
+        goal_layout.addWidget(self.lbl_goal_eta)
+        left_layout.addWidget(self.goal_group)
 
         left_layout.addStretch(1)
         splitter.addWidget(left_widget)
@@ -653,7 +696,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         tab_reb_layout.addWidget(orders_group, 1)
 
         right_tabs.addTab(
-            tab_rebalance, "⚖️ Carteira & Ordens"
+            tab_rebalance, "⚖️ Carteira && Ordens"
         )
 
         # Tab 2: Comparativo dos 3 Modelos de Tom Cover
@@ -827,12 +870,15 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         spot_balances: dict,
         spot_msg: str,
         spot_ok: bool,
+        initial_weights: tuple,
     ):
+        self.loading_overlay.hide_overlay()
         self.btn_refresh_online.setEnabled(True)
         self.coin_data = coin_data
         self.bnb_brl_price = bnb_brl_price
         self.bnb_brl_source = bnb_brl_source
         self.coins_order = coins_order
+        self.weights_cache = {tuple(coins_order): initial_weights}
 
         self.card_bnb_price["main"].setText(core.format_brl(bnb_brl_price))
         self.card_bnb_price["frame"].setToolTip(bnb_brl_source)
@@ -841,11 +887,9 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
             spot_balances=spot_balances if spot_ok else None
         )
         self.refresh_history_table()
-        self._init_waiting_view()
-        self.loading_overlay.hide_overlay()
+        self.recalculate_portfolio()
         self.status_bar.showMessage(
-            f"Candles baixados e JSONs locais atualizados! BNBBRL = {core.format_brl(bnb_brl_price)} | {spot_msg}. "
-            "Clique em '⚡ Simular Ordens'."
+            f"Candles atualizados, saldos carregados e ordens simuladas! BNBBRL = {core.format_brl(bnb_brl_price)} | {spot_msg}."
         )
 
     def _init_waiting_view(self):
@@ -853,6 +897,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         n_rows = len(self.coins_order)
         self.table_positions.setRowCount(n_rows)
         self.table_positions.setFixedHeight(28 + n_rows * 26 + 4)
+        total_bnb = 0.0
         for row_idx in range(n_rows):
             c = self.coins_order[row_idx]
             p_bnb = 1.0 if c == "BNB" else self.coin_data[c]["price_bnb"]
@@ -861,6 +906,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
                 if c in self.qty_inputs
                 else 0.0
             )
+            total_bnb += q_val * p_bnb
             cells = [
                 c,
                 f"{q_val:.6f}",
@@ -890,6 +936,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
                     item.setForeground(QtGui.QColor("#848E9C"))
                 self.table_positions.setItem(row_idx, col_idx, item)
 
+        self._update_summary_cards(total_bnb, total_bnb * self.bnb_brl_price)
         self.orders_text.setPlainText(
             "Saldos carregados à esquerda. Confira/ajuste as quantidades e clique no botão "
             f"'⚡ Simular Ordens' para atualizar a tabela das {n_rows} carteiras e o passo a passo das ordens."
@@ -976,174 +1023,136 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         if not self.coins_order or self.bnb_brl_price <= 0:
             return
 
-        self.loading_overlay.show_overlay(
-            "⏳ Processando Modelos de Tom Cover...",
-            "Calculando posições da carteira e matrizes de retornos...",
-        )
-        try:
-            holdings = {
-                c: self._parse_input_float(self.qty_inputs[c].text())
-                for c in self.coins_order
-                if c in self.qty_inputs
+        holdings = {
+            c: self._parse_input_float(self.qty_inputs[c].text())
+            for c in self.coins_order
+            if c in self.qty_inputs
+        }
+        active_universe = [
+            c
+            for c in self.coins_order
+            if c in self.active_checks and self.active_checks[c].isChecked()
+        ]
+        if not active_universe:
+            active_universe = list(self.coins_order)
+
+        positions = {}
+        total_bnb = 0.0
+        for c in self.coins_order:
+            qty = holdings.get(c, 0.0)
+            p_bnb = 1.0 if c == "BNB" else self.coin_data[c]["price_bnb"]
+            v_bnb = qty * p_bnb
+            v_brl = v_bnb * self.bnb_brl_price
+            total_bnb += v_bnb
+            positions[c] = {
+                "quantidade": qty,
+                "preco_bnb": p_bnb,
+                "preco_brl": p_bnb * self.bnb_brl_price,
+                "valor_bnb": v_bnb,
+                "valor_brl": v_brl,
             }
-            active_universe = [
-                c
-                for c in self.coins_order
-                if c in self.active_checks and self.active_checks[c].isChecked()
-            ]
-            if not active_universe:
-                active_universe = list(self.coins_order)
 
-            positions = {}
-            total_bnb = 0.0
-            for c in self.coins_order:
-                qty = holdings.get(c, 0.0)
-                p_bnb = 1.0 if c == "BNB" else self.coin_data[c]["price_bnb"]
-                v_bnb = qty * p_bnb
-                v_brl = v_bnb * self.bnb_brl_price
-                total_bnb += v_bnb
-                positions[c] = {
-                    "quantidade": qty,
-                    "preco_bnb": p_bnb,
-                    "preco_brl": p_bnb * self.bnb_brl_price,
-                    "valor_bnb": v_bnb,
-                    "valor_brl": v_brl,
-                }
+        total_brl = total_bnb * self.bnb_brl_price
+        for c in self.coins_order:
+            positions[c]["peso_atual"] = (
+                positions[c]["valor_bnb"] / total_bnb if total_bnb > 0 else 0.0
+            )
 
-            total_brl = total_bnb * self.bnb_brl_price
-            for c in self.coins_order:
-                positions[c]["peso_atual"] = (
-                    positions[c]["valor_bnb"] / total_bnb if total_bnb > 0 else 0.0
-                )
+        cache_key = tuple(active_universe)
+        if cache_key not in self.weights_cache:
+            self.weights_cache[cache_key] = _compute_models_for_subset(
+                self.coin_data, active_universe
+            )
+        w_crp_sub, w_univ_sub, w_bcrp_sub = self.weights_cache[cache_key]
 
-            # Matriz de preços relativos para ativos selecionados
-            non_bnb_active = [c for c in active_universe if c != "BNB"]
-            all_lengths = [
-                len(self.coin_data[c]["series"]) for c in non_bnb_active
-            ]
-            window_len = min(all_lengths) if all_lengths else 0
-            relatives_matrix = []
-            if window_len >= 2:
-                sorted_prices = {}
-                for c in non_bnb_active:
-                    s_dict = self.coin_data[c]["series"]
-                    times_sorted = sorted(s_dict.keys())[-window_len:]
-                    sorted_prices[c] = [s_dict[t] for t in times_sorted]
-                for t in range(1, window_len):
-                    row = []
-                    for c in active_universe:
-                        if c == "BNB":
-                            row.append(1.0)
-                        else:
-                            row.append(
-                                sorted_prices[c][t] / sorted_prices[c][t - 1]
-                            )
-                    relatives_matrix.append(row)
+        def expand_w(w_sub):
+            out = {c: 0.0 for c in self.coins_order}
+            for c, w in zip(active_universe, w_sub):
+                out[c] = w
+            return out
 
-            m_active = len(active_universe)
-            w_crp_sub = [1.0 / m_active] * m_active
+        w_crp = expand_w(w_crp_sub)
+        w_univ = expand_w(w_univ_sub)
+        w_bcrp = expand_w(w_bcrp_sub)
 
-            calc_res = {"w_univ": w_crp_sub, "w_bcrp": w_crp_sub, "done": False, "min_time": False}
-            loop = QtCore.QEventLoop(self)
+        strategy_key = self.strategy_combo.currentData() or "crp"
+        if strategy_key == "universal":
+            target_weights = w_univ
+        elif strategy_key == "bcrp":
+            target_weights = w_bcrp
+        else:
+            target_weights = w_crp
 
-            def _check_quit():
-                if calc_res["done"] and calc_res["min_time"]:
-                    loop.quit()
+        min_drift_frac = self.threshold_spin.value() / 100.0
+        suggestions = []
+        for c in self.coins_order:
+            w_cur = positions[c]["peso_atual"]
+            w_tgt = target_weights[c]
+            target_bnb = total_bnb * w_tgt
+            diff_bnb = target_bnb - positions[c]["valor_bnb"]
+            diff_brl = diff_bnb * self.bnb_brl_price
+            p_bnb = positions[c]["preco_bnb"]
+            diff_qty = diff_bnb / p_bnb if p_bnb > 0 else 0.0
 
-            def _on_calc_done(w_u, w_b):
-                calc_res["w_univ"] = w_u
-                calc_res["w_bcrp"] = w_b
-                calc_res["done"] = True
-                _check_quit()
-
-            def _on_min_time():
-                calc_res["min_time"] = True
-                _check_quit()
-
-            calc_worker = PortfolioCalcWorker(relatives_matrix, m_active)
-            calc_worker.progress_signal.connect(self.loading_overlay.update_status)
-            calc_worker.finished_signal.connect(_on_calc_done)
-            QtCore.QTimer.singleShot(320, _on_min_time)
-            calc_worker.start()
-            loop.exec_()
-            calc_worker.wait()
-
-            w_univ_sub = calc_res["w_univ"]
-            w_bcrp_sub = calc_res["w_bcrp"]
-
-            def expand_w(w_sub):
-                out = {c: 0.0 for c in self.coins_order}
-                for c, w in zip(active_universe, w_sub):
-                    out[c] = w
-                return out
-
-            w_crp = expand_w(w_crp_sub)
-            w_univ = expand_w(w_univ_sub)
-            w_bcrp = expand_w(w_bcrp_sub)
-
-            strategy_key = self.strategy_combo.currentData() or "crp"
-            if strategy_key == "universal":
-                target_weights = w_univ
-            elif strategy_key == "bcrp":
-                target_weights = w_bcrp
+            if total_bnb <= 0 or abs(w_tgt - w_cur) < min_drift_frac:
+                acao = "MANTER"
+            elif diff_bnb > 0:
+                acao = "COMPRAR" if c != "BNB" else "RESERVAR BNB"
             else:
-                target_weights = w_crp
+                acao = "VENDER" if c != "BNB" else "USAR BNB"
 
-            min_drift_frac = self.threshold_spin.value() / 100.0
-            suggestions = []
-            for c in self.coins_order:
-                w_cur = positions[c]["peso_atual"]
-                w_tgt = target_weights[c]
-                target_bnb = total_bnb * w_tgt
-                diff_bnb = target_bnb - positions[c]["valor_bnb"]
-                diff_brl = diff_bnb * self.bnb_brl_price
-                p_bnb = positions[c]["preco_bnb"]
-                diff_qty = diff_bnb / p_bnb if p_bnb > 0 else 0.0
+            suggestions.append(
+                {
+                    "moeda": c,
+                    "acao": acao,
+                    "peso_atual_pct": round(w_cur * 100, 2),
+                    "peso_alvo_pct": round(w_tgt * 100, 2),
+                    "desvio_pct": round((w_cur - w_tgt) * 100, 2),
+                    "qtd_atual": positions[c]["quantidade"],
+                    "qtd_alvo": target_bnb / p_bnb if p_bnb > 0 else 0.0,
+                    "delta_qtd": diff_qty,
+                    "delta_bnb": diff_bnb,
+                    "delta_brl": diff_brl,
+                }
+            )
 
-                if total_bnb <= 0 or abs(w_tgt - w_cur) < min_drift_frac:
-                    acao = "MANTER"
-                elif diff_bnb > 0:
-                    acao = "COMPRAR" if c != "BNB" else "RESERVAR BNB"
-                else:
-                    acao = "VENDER" if c != "BNB" else "USAR BNB"
+        self.last_computed = {
+            "strategy_key": strategy_key,
+            "total_bnb": total_bnb,
+            "total_brl": total_brl,
+            "positions": positions,
+            "w_crp": w_crp,
+            "w_univ": w_univ,
+            "w_bcrp": w_bcrp,
+            "target_weights": target_weights,
+            "suggestions": suggestions,
+        }
 
-                suggestions.append(
-                    {
-                        "moeda": c,
-                        "acao": acao,
-                        "peso_atual_pct": round(w_cur * 100, 2),
-                        "peso_alvo_pct": round(w_tgt * 100, 2),
-                        "desvio_pct": round((w_cur - w_tgt) * 100, 2),
-                        "qtd_atual": positions[c]["quantidade"],
-                        "qtd_alvo": target_bnb / p_bnb if p_bnb > 0 else 0.0,
-                        "delta_qtd": diff_qty,
-                        "delta_bnb": diff_bnb,
-                        "delta_brl": diff_brl,
-                    }
-                )
-
-            self.last_computed = {
-                "strategy_key": strategy_key,
-                "total_bnb": total_bnb,
-                "total_brl": total_brl,
-                "positions": positions,
-                "w_crp": w_crp,
-                "w_univ": w_univ,
-                "w_bcrp": w_bcrp,
-                "target_weights": target_weights,
-                "suggestions": suggestions,
-            }
-
-            self._update_summary_cards(total_bnb, total_brl)
-            self._update_positions_table(positions, suggestions)
-            self._update_models_table(positions, w_crp, w_univ, w_bcrp)
-            self._update_orders_instructions(suggestions, total_bnb)
-        finally:
-            self.loading_overlay.hide_overlay()
+        self._update_summary_cards(total_bnb, total_brl)
+        self._update_positions_table(positions, suggestions)
+        self._update_models_table(positions, w_crp, w_univ, w_bcrp)
+        self._update_orders_instructions(suggestions, total_bnb)
 
     def _update_summary_cards(self, total_bnb: float, total_brl: float):
         self.card_bnb_val["main"].setText(f"{total_bnb:.6f} BNB")
         self.card_brl_val["main"].setText(core.format_brl(total_brl))
+
+        goal_info = core.compute_goal_progress(total_bnb, self.bnb_brl_price)
+        self.lbl_goal_main.setText(
+            f"{total_bnb:.6f} / {core.META_BNB:g} BNB ({goal_info['pct']:.2f}%)"
+        )
+        self.lbl_goal_sub.setText(
+            f"Faltam {goal_info['dobras_restantes']:.2f} dobras (2x) | Próx. degrau: {goal_info['proximo_marco']:g} BNB"
+        )
+        self.lbl_goal_eta.setText(goal_info["eta_proximo_str"])
+        self.goal_group.setToolTip(
+            f"Meta: {core.META_BNB:g} BNB ({core.format_brl(goal_info['meta_brl'])})\n"
+            f"Progresso atual: {total_bnb:.6f} / {core.META_BNB:g} BNB ({goal_info['pct']:.4f}%)\n"
+            f"Dobras restantes (2x): {goal_info['dobras_restantes']:.2f}\n"
+            f"Próximo degrau: {goal_info['proximo_marco']:g} BNB (faltam +{goal_info['falta_proximo_marco']:.6f} BNB)\n"
+            f"{goal_info['eta_proximo_str']}\n"
+            f"Previsão para {core.META_BNB:g} BNB: {goal_info['eta_meta_str']}"
+        )
 
         history = core.load_history()
         if history and total_bnb > 0:

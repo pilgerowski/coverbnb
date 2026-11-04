@@ -1,6 +1,6 @@
 # Base Teórica — Rebalanceamento Universal de Portfólios (Thomas M. Cover)
 
-[← Voltar ao README principal](README.md)
+[← Voltar ao README principal](README.md) | [🌱 Ler versão para iniciantes e leigos (`base_teorica_leigos.md`)](base_teorica_leigos.md)
 
 ---
 

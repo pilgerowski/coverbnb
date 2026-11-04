@@ -6,9 +6,11 @@ Ferramenta em Python (modo gráfico **PyQt5** e linha de comando **CLI**) que ap
 
 ## 📚 Documentação do Projeto
 
-* 📘 **[Base Teórica e Backtest (`base_teorica.md`)](base_teorica.md)** — Fundamentação matemática da Teoria de Portfólios de Thomas M. Cover, *Volatility Pumping*, diferenças entre os modelos `CRP`, `Universal (Dirichlet 1/2)` e `BCRP`, análise de *Maximum Drawdown* e resultados dos backtests em 1.000 candles diários.
+* 🌱 **[Guia para Iniciantes e Leigos (`base_teorica_leigos.md`)](base_teorica_leigos.md)** — Explicação intuitiva e sem "economês" de como o rebalanceamento transforma o sobe e desce do mercado em mais moedas **BNB**, exemplos práticos passo a passo e **sugestões de leitura**.
+* 📘 **[Base Teórica Matemática e Backtest (`base_teorica.md`)](base_teorica.md)** — Fundamentação matemática da Teoria de Portfólios de Thomas M. Cover, *Volatility Pumping*, diferenças entre os modelos `CRP`, `Universal (Dirichlet 1/2)` e `BCRP`, análise de *Maximum Drawdown* e resultados dos backtests em 1.000 candles diários.
 * ⚙️ **[Detalhes Técnicos e Implementação (`implementacao.md`)](implementacao.md)** — Arquitetura interna do motor matemático em Python puro, integração `HMAC-SHA256` com a API Spot da Binance, funcionamento da interface gráfica `PyQt5`, horários recomendados de operação e estrutura de arquivos.
 * 🛠️ **[Guia de Instalação e Configuração (`instalacao.md`)](instalacao.md)** — Requisitos (`Python 3.8+` e `PyQt5`), criação e configuração segura das chaves de leitura em `keys.json` e configuração dos links de candles em `paresXlinks.json`.
+* ❓ **[Perguntas Frequentes (`faq.md`)](faq.md)** — Todas as dúvidas teóricas, operacionais, projeções de metas (`1`, `2`, `5`, `256` e `1.000 BNB`, estimativa para `2038`), análise de histórico e detalhes técnicos respondidos passo a passo.
 * 🤖 **[Prompt Mestre de Especificação (`PROMPT.md`)](PROMPT.md)** — Prompt completo e autocontido para recriar todo o projeto do zero.
 
 ---

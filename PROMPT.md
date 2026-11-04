@@ -141,13 +141,14 @@ A partir das séries de fechamento das moedas ativas (`active_universe`), alinhe
 3. **Inicialização Automática (`PriceFetchWorker` via `QThread`):**
    - Ao abrir o programa, dispara automaticamente a atualização online dos candles e preços recentes a partir de `paresXlinks.json` (atualizando os arquivos `.json` locais) e consulta o saldo Spot real na Binance via `keys.json`.
    - Se `keys.json` tiver chaves válidas, preenche os campos de quantidade com o saldo Spot real; caso contrário, inicia todos os campos zerados (`0`).
-   - O seletor de modelo (`self.strategy_combo`) deve vir sempre com **"Portfólio Universal (Dirichlet 1/2)"** (`universal`) selecionado como `default`.
+   - O seletor de modelo (`self.strategy_combo`) deve vir sempre com **"Portfólio Universal (Dirichlet 1/2)"** (`universal`) selecionado como `default`, e o controle de **Desvio Mínimo (`self.threshold_spin`)** deve iniciar em **`1,5%`** (`setValue(1.5)`).
    - Não deve existir botão `"JSONs Locais"`; os botões de ação no painel esquerdo são:
      - **"⚡ Simular Ordens"** (ocupa a largura das 2 colunas no topo)
-     - **"💾 Salvar Registro"** e **"🔄 Atualizar Candles & Saldo"** (lado a lado abaixo).
-4. **Comportamento da Tabela das 6 Carteiras e Simulação sob Demanda:**
+     - **"🔄 Atualizar Saldo"** (à esquerda) e **"💾 Salvar Registro"** (à direita) abaixo.
+   - Logo abaixo dos botões de ação no painel esquerdo, incluir o box **"3. Meta de Acumulação (256 BNB)"** exibindo o progresso atual (`total_bnb / 256 BNB`), percentual concluído, dobras restantes (`log2(256 / total_bnb)`) e o próximo marco da escada de dobras.
+4. **Comportamento da Tabela das 6 Carteiras e Simulação Automática + Exploratória:**
    - Na aba **"⚖️ Carteira & Ordens"**, a tabela superior (`self.table_positions`) mostra exatamente as **6 carteiras (`BNB`, `XRP`, `SOL`, `TRX`, `DOGE`, `LTC`)** com altura fixa calculada sob medida (`28 + n_rows * 26 + 4 = 188px`, sem barra de rolagem vertical), deixando todo o espaço inferior para o grupo **"Simular Ordens — Passo a Passo na Binance (Acumular BNB)"** (`self.orders_text`).
-   - **Importante:** Ao iniciar ou digitar nos campos de saldo, a tabela e o passo a passo das ordens permanecem em estado `"Aguardando"` e **somente são calculados e atualizados quando o usuário clicar em `"⚡ Simular Ordens"`**.
+   - **Importante:** Assim que o carregamento inicial dos candles e dos saldos Spot termina (`_on_prices_loaded`), o programa já executa automaticamente a simulação das ordens (`self.recalculate_portfolio()`), aproveitando o *layer* de ampulheta. Os botões **"⚡ Simular Ordens"** e **"🔄 Atualizar Saldo"** permanecem disponíveis para que o usuário possa fazer testes exploratórios alterando quantidades/parâmetros na carteira ou recarregar os saldos reais da corretora.
    - O passo a passo das ordens lista primeiro o **1º Passo: VENDAS (`Moeda -> BNB`)** para liberar BNB em caixa, e depois o **2º Passo: COMPRAS (`BNB -> Moeda`)**, exibindo quantidades exatas, valores em BNB, valores em `R$`, reserva final de BNB e estimativa de taxa (`0,10%`).
 5. **Layer de Ampulheta Animada (`LoadingOverlay` e `HourglassSpinnerWidget`):**
    - Implementar um overlay semitransparente sobre a janela principal com uma ampulheta vetorial animada (`QPainter` com arco giratório `#F0B90B` e areia fluindo entre os bulbos) que bloqueia cliques acidentais e informa o progresso detalhado em tempo real:

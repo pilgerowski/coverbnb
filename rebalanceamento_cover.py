@@ -24,13 +24,107 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LINKS_FILE = os.path.join(BASE_DIR, "paresXlinks.json")
 KEYS_FILE = os.path.join(BASE_DIR, "keys.json")
 HISTORY_FILE = os.path.join(BASE_DIR, "historico_carteira.json")
 BINANCE_FEE = 0.001  # 0.10% taxa spot padrão
+META_BNB = 256.0  # Meta de acumulação: 256 BNBs (2^8 BNB)
+
+
+def compute_goal_progress(total_bnb: float, bnb_brl_price: float = 0.0) -> dict:
+    """Calcula o progresso atual rumo à meta de 256 BNBs (em %, dobras restantes, próximo degrau e data provável)."""
+    if total_bnb <= 0:
+        return {
+            "meta_bnb": META_BNB,
+            "pct": 0.0,
+            "dobras_restantes": 10.0,
+            "proximo_marco": 0.5,
+            "falta_proximo_marco": 0.5,
+            "meta_brl": META_BNB * bnb_brl_price,
+            "eta_proximo_str": "📅 Data provável (0.5 BNB): aguardando simulação",
+            "eta_meta_str": "—",
+            "taxa_diaria_pct": 0.0,
+        }
+    pct = (total_bnb / META_BNB) * 100.0
+    dobras_restantes = (
+        math.log2(META_BNB / total_bnb) if total_bnb < META_BNB else 0.0
+    )
+    marcos = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0]
+    proximo_marco = META_BNB
+    for m in marcos:
+        if m > total_bnb * 1.01:
+            proximo_marco = m
+            break
+
+    # Estima a taxa diária composta a partir do histórico real da carteira de 6 moedas
+    history = load_history()
+    valid_hist = [
+        h
+        for h in history
+        if isinstance(h, dict)
+        and "ZEC" not in h.get("quantidades", {})
+        and float(h.get("total_bnb", 0.0)) > 0
+        and int(h.get("timestamp", 0)) >= 1793670000
+    ]
+    if not valid_hist:
+        valid_hist = [
+            h
+            for h in history
+            if isinstance(h, dict) and float(h.get("total_bnb", 0.0)) > 0
+        ]
+
+    log_r_day = None
+    if valid_hist:
+        bnb_0 = float(valid_hist[0].get("total_bnb", 0.0))
+        ts_0 = int(valid_hist[0].get("timestamp", 0))
+        now_ts = int(time.time())
+        bnb_end, ts_end = total_bnb, now_ts
+        if (ts_end - ts_0 < 3600 or bnb_end <= bnb_0) and len(valid_hist) >= 2:
+            last_bnb = float(valid_hist[-1].get("total_bnb", 0.0))
+            last_ts = int(valid_hist[-1].get("timestamp", 0))
+            if last_bnb > bnb_0 and last_ts > ts_0:
+                bnb_end, ts_end = last_bnb, last_ts
+        days_elapsed = (ts_end - ts_0) / 86400.0
+        if days_elapsed >= 0.05 and bnb_end > bnb_0 > 0:
+            log_r_day = math.log(bnb_end / bnb_0) / days_elapsed
+            log_r_day = max(0.0002, min(0.02, log_r_day))
+
+    if log_r_day is None:
+        log_r_day = math.log(1.0 + 0.0020)  # Ritmo moderado padrão (+0,20%/dia)
+
+    taxa_diaria_pct = (math.exp(log_r_day) - 1.0) * 100.0
+    now_dt = datetime.now()
+    if proximo_marco > total_bnb:
+        dias_prox = math.log(proximo_marco / total_bnb) / log_r_day
+        dt_prox = now_dt + timedelta(days=dias_prox)
+        eta_proximo_str = (
+            f"📅 Data provável ({proximo_marco:g} BNB): "
+            f"{dt_prox.strftime('%d/%m/%Y')} (~{int(round(dias_prox))} dias a +{taxa_diaria_pct:.2f}%/d)"
+        )
+    else:
+        eta_proximo_str = "🎉 Meta de 256 BNB alcançada!"
+
+    if META_BNB > total_bnb:
+        dias_meta = math.log(META_BNB / total_bnb) / log_r_day
+        dt_meta = now_dt + timedelta(days=dias_meta)
+        eta_meta_str = f"{dt_meta.strftime('%d/%m/%Y')} (~{int(round(dias_meta))} dias)"
+    else:
+        eta_meta_str = "Alcançada!"
+
+    return {
+        "meta_bnb": META_BNB,
+        "pct": pct,
+        "dobras_restantes": max(0.0, dobras_restantes),
+        "proximo_marco": proximo_marco,
+        "falta_proximo_marco": max(0.0, proximo_marco - total_bnb),
+        "meta_brl": META_BNB * bnb_brl_price,
+        "eta_proximo_str": eta_proximo_str,
+        "eta_meta_str": eta_meta_str,
+        "taxa_diaria_pct": taxa_diaria_pct,
+    }
 
 
 def load_api_keys(keys_path: str = KEYS_FILE):
@@ -1006,6 +1100,12 @@ def main():
     print(f"  Cotação BNBBRL de referência : {format_brl(bnb_brl_price)} ({bnb_brl_source})")
     print(f"  VALOR TOTAL EM BNB           : {total_bnb:.8f} BNB")
     print(f"  VALOR TOTAL EM REAIS (BRL)   : {format_brl(total_brl)}")
+    goal_info = compute_goal_progress(total_bnb, bnb_brl_price)
+    print(
+        f"  META DE ACUMULAÇÃO (256 BNB) : {goal_info['pct']:.4f}% concluído "
+        f"| Faltam {goal_info['dobras_restantes']:.2f} dobras "
+        f"| Próx. marco: {goal_info['proximo_marco']:g} BNB (faltam +{goal_info['falta_proximo_marco']:.6f} BNB)"
+    )
 
     if history:
         first_entry = history[0]
