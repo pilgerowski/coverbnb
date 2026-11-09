@@ -349,6 +349,298 @@ class LoadingOverlay(QtWidgets.QWidget):
         painter.fillRect(self.rect(), QtGui.QColor(18, 20, 26, 190))
 
 
+class PortfolioChartWidget(QtWidgets.QWidget):
+    """Widget customizado para renderizar o gráfico temporal da quantidade total de BNBs na carteira."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.points = []
+        self.setMouseTracking(True)
+        self.hover_idx = -1
+        self.setMinimumSize(540, 360)
+
+    def set_data(self, points: list):
+        self.points = points
+        self.hover_idx = -1
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if len(self.points) < 2:
+            return
+        m_left = 75
+        m_right = 30
+        w = self.width() - m_left - m_right
+        if w <= 0:
+            return
+        x_mouse = event.pos().x()
+        if x_mouse < m_left or x_mouse > self.width() - m_right:
+            if self.hover_idx != -1:
+                self.hover_idx = -1
+                self.update()
+            return
+        step = w / (len(self.points) - 1)
+        idx = int(round((x_mouse - m_left) / step))
+        idx = max(0, min(len(self.points) - 1, idx))
+        if idx != self.hover_idx:
+            self.hover_idx = idx
+            self.update()
+
+    def leaveEvent(self, event):
+        if self.hover_idx != -1:
+            self.hover_idx = -1
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        rect = self.rect()
+
+        # Fundo do gráfico
+        painter.fillRect(rect, QtGui.QColor("#181A20"))
+
+        if not self.points:
+            painter.setPen(QtGui.QColor("#848E9C"))
+            font = painter.font()
+            font.setPointSize(12)
+            painter.setFont(font)
+            painter.drawText(
+                rect,
+                QtCore.Qt.AlignCenter,
+                "Nenhum registro encontrado a partir de 03/11/2026.",
+            )
+            return
+
+        m_left = 75
+        m_right = 30
+        m_top = 30
+        m_bottom = 50
+        plot_w = rect.width() - m_left - m_right
+        plot_h = rect.height() - m_top - m_bottom
+
+        if plot_w <= 20 or plot_h <= 20:
+            return
+
+        # Área de plotagem
+        plot_rect = QtCore.QRectF(m_left, m_top, plot_w, plot_h)
+        painter.fillRect(plot_rect, QtGui.QColor("#1E2329"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#2B3139"), 1))
+        painter.drawRect(plot_rect)
+
+        # Escala em BNB: foca nos valores reais para dar ótima resolução visual de subidas e descidas
+        all_bnb_totals = [p["total_bnb"] for p in self.points]
+        min_val = min(all_bnb_totals)
+        max_val = max(all_bnb_totals)
+        val_span = max_val - min_val
+        pad = val_span * 0.18 if val_span > 0 else (min_val * 0.05 or 0.01)
+        y_min_bnb = max(0.0, min_val - pad)
+        y_max_bnb = max_val + pad
+
+        # Linhas de grade horizontais e rótulos do eixo Y (BNB)
+        grid_lines = 6
+        font_axis = QtGui.QFont("DejaVu Sans", 9)
+        painter.setFont(font_axis)
+        for i in range(grid_lines):
+            frac = i / (grid_lines - 1)
+            y_pos = m_top + (1.0 - frac) * plot_h
+            painter.setPen(QtGui.QPen(QtGui.QColor("#2B3139"), 1, QtCore.Qt.DashLine))
+            painter.drawLine(QtCore.QPointF(m_left, y_pos), QtCore.QPointF(m_left + plot_w, y_pos))
+
+            v_bnb = y_min_bnb + frac * (y_max_bnb - y_min_bnb)
+            painter.setPen(QtGui.QColor("#F0B90B"))
+            painter.drawText(
+                QtCore.QRectF(4, y_pos - 9, m_left - 8, 18),
+                QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                f"{v_bnb:.5f}",
+            )
+
+        n = len(self.points)
+        x_step = plot_w / (n - 1) if n > 1 else 0
+
+        # Coordenadas X para cada registro
+        x_coords = [m_left + (i * x_step if n > 1 else plot_w / 2) for i in range(n)]
+
+        def to_y(val):
+            return m_top + (1.0 - (val - y_min_bnb) / (y_max_bnb - y_min_bnb)) * plot_h
+
+        # Curva de Quantidade Total de BNBs
+        poly_total = [QtCore.QPointF(x_coords[i], to_y(p["total_bnb"])) for i, p in enumerate(self.points)]
+
+        # Gradiente suave dourado sob a linha
+        if len(poly_total) >= 2:
+            grad_total = QtGui.QLinearGradient(0, m_top, 0, m_top + plot_h)
+            grad_total.setColorAt(0.0, QtGui.QColor(240, 185, 11, 45))
+            grad_total.setColorAt(1.0, QtGui.QColor(240, 185, 11, 0))
+            area_total = QtGui.QPolygonF(
+                [QtCore.QPointF(m_left, m_top + plot_h)]
+                + poly_total
+                + [QtCore.QPointF(m_left + plot_w, m_top + plot_h)]
+            )
+            painter.setBrush(QtGui.QBrush(grad_total))
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawPolygon(area_total)
+
+        # Traçado da linha da quantidade de BNBs
+        painter.setPen(QtGui.QPen(QtGui.QColor("#F0B90B"), 2.8, QtCore.Qt.SolidLine))
+        painter.setBrush(QtCore.Qt.NoBrush)
+        for i in range(len(poly_total) - 1):
+            painter.drawLine(poly_total[i], poly_total[i + 1])
+
+        # Marcadores circulares nos pontos
+        painter.setPen(QtGui.QPen(QtGui.QColor("#181A20"), 1.8))
+        painter.setBrush(QtGui.QColor("#F0B90B"))
+        for pt in poly_total:
+            painter.drawEllipse(pt, 4.5, 4.5)
+
+        # Rótulos no eixo X (data e hora de cada registro)
+        font_x = QtGui.QFont("DejaVu Sans", 8)
+        painter.setFont(font_x)
+        painter.setPen(QtGui.QColor("#848E9C"))
+        for i, p in enumerate(self.points):
+            x = x_coords[i]
+            parts = p["data_hora"].split()
+            date_part = parts[0][5:] if len(parts[0]) >= 10 else f"P{i+1}"
+            time_part = parts[1][:5] if len(parts) > 1 and len(parts[1]) >= 5 else ""
+            painter.drawText(
+                QtCore.QRectF(x - 30, m_top + plot_h + 6, 60, 15),
+                QtCore.Qt.AlignCenter,
+                date_part,
+            )
+            if time_part:
+                painter.drawText(
+                    QtCore.QRectF(x - 30, m_top + plot_h + 20, 60, 15),
+                    QtCore.Qt.AlignCenter,
+                    time_part,
+                )
+
+        # Linha vertical guia e Tooltip sob o cursor do mouse
+        if 0 <= self.hover_idx < len(self.points):
+            p = self.points[self.hover_idx]
+            pt = poly_total[self.hover_idx]
+
+            # Linha vertical tracejada
+            painter.setPen(QtGui.QPen(QtGui.QColor("#EAECEF"), 1, QtCore.Qt.DashLine))
+            painter.drawLine(QtCore.QPointF(pt.x(), m_top), QtCore.QPointF(pt.x(), m_top + plot_h))
+
+            # Ponto em foco com halo
+            painter.setPen(QtGui.QPen(QtGui.QColor("#FFFFFF"), 2))
+            painter.setBrush(QtGui.QColor("#F0B90B"))
+            painter.drawEllipse(pt, 6.0, 6.0)
+
+            # Caixa de tooltip
+            tip_w = 200
+            tip_h = 56
+            tip_x = pt.x() + 12
+            if tip_x + tip_w > rect.width() - 8:
+                tip_x = pt.x() - tip_w - 12
+            tip_y = max(m_top + 4, min(m_top + plot_h - tip_h - 4, pt.y() - 28))
+
+            tip_rect = QtCore.QRectF(tip_x, tip_y, tip_w, tip_h)
+            painter.setPen(QtGui.QPen(QtGui.QColor("#F0B90B"), 1))
+            painter.setBrush(QtGui.QColor(24, 26, 32, 245))
+            painter.drawRoundedRect(tip_rect, 6, 6)
+
+            # Conteúdo do tooltip
+            font_tip = QtGui.QFont("DejaVu Sans", 8)
+            font_tip.setBold(True)
+            painter.setFont(font_tip)
+            painter.setPen(QtGui.QColor("#EAECEF"))
+            painter.drawText(QtCore.QPointF(tip_x + 10, tip_y + 18), p["data_hora"])
+
+            font_tip.setPointSize(9)
+            painter.setFont(font_tip)
+            painter.setPen(QtGui.QColor("#F0B90B"))
+            painter.drawText(
+                QtCore.QPointF(tip_x + 10, tip_y + 40),
+                f"Quantidade: {p['total_bnb']:.6f} BNB",
+            )
+
+
+class ProgressDialog(QtWidgets.QDialog):
+    """Janela modal para exibição gráfica temporal da quantidade total de BNBs."""
+
+    def __init__(self, history_points: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Evolução Temporal da Quantidade Total de BNBs (a partir de 03/11)")
+        self.resize(780, 500)
+        self.setStyleSheet(
+            """
+            QDialog {
+                background-color: #181A20;
+                color: #EAECEF;
+            }
+            QPushButton {
+                background-color: #2B3139;
+                border: 1px solid #474D57;
+                border-radius: 6px;
+                padding: 6px 18px;
+                color: #EAECEF;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #363C45;
+                border-color: #F0B90B;
+            }
+            """
+        )
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        # Header explicativo
+        header_layout = QtWidgets.QHBoxLayout()
+        title_box = QtWidgets.QVBoxLayout()
+        lbl_title = QtWidgets.QLabel("📈 Quantidade Total de BNBs na Carteira")
+        lbl_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #F0B90B;")
+        lbl_sub = QtWidgets.QLabel(
+            "Evolução temporal da quantidade total de BNBs acumulados (início a partir de 03/11/2026)"
+        )
+        lbl_sub.setStyleSheet("font-size: 11px; color: #B7BDC6;")
+        title_box.addWidget(lbl_title)
+        title_box.addWidget(lbl_sub)
+        header_layout.addLayout(title_box)
+        header_layout.addStretch(1)
+
+        # Legenda simples
+        lbl_leg = QtWidgets.QLabel("━ ★ Quantidade Total (BNB)")
+        lbl_leg.setStyleSheet("color: #F0B90B; font-weight: bold; font-size: 11px;")
+        header_layout.addWidget(lbl_leg)
+
+        layout.addLayout(header_layout)
+
+        # Widget de gráfico de BNB
+        self.chart_widget = PortfolioChartWidget(self)
+        self.chart_widget.set_data(history_points)
+        layout.addWidget(self.chart_widget, 1)
+
+        # Resumo do período
+        if history_points:
+            p_first = history_points[0]
+            p_last = history_points[-1]
+            diff_bnb = p_last["total_bnb"] - p_first["total_bnb"]
+            pct_bnb = (
+                (diff_bnb / p_first["total_bnb"]) * 100.0
+                if p_first["total_bnb"] > 0
+                else 0.0
+            )
+            color_res = "#0ECB81" if diff_bnb >= 0 else "#F6465D"
+
+            stats_box = QtWidgets.QHBoxLayout()
+            lbl_stats = QtWidgets.QLabel(
+                f"Período: <b>{p_first['data_hora'].split()[0]}</b> ➔ <b>{p_last['data_hora'].split()[0]}</b> "
+                f"({len(history_points)} registros) | Variação BNB: "
+                f"<b style='color: {color_res}; font-size: 12px;'>{diff_bnb:+.6f} BNB ({pct_bnb:+.2f}%)</b>"
+            )
+            lbl_stats.setStyleSheet("color: #EAECEF; font-size: 11px;")
+            stats_box.addWidget(lbl_stats)
+            stats_box.addStretch(1)
+
+            btn_close = QtWidgets.QPushButton("Fechar")
+            btn_close.clicked.connect(self.accept)
+            stats_box.addWidget(btn_close)
+            layout.addLayout(stats_box)
+
+
 class CoverRebalancerWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -579,7 +871,7 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
 
         left_layout.addWidget(config_group)
 
-        # Buttons (sem o botão JSONs Locais)
+        # Buttons
         btn_grid = QtWidgets.QGridLayout()
         btn_grid.setSpacing(6)
 
@@ -590,6 +882,12 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         )
         self.btn_apply_sim.clicked.connect(self.recalculate_portfolio)
 
+        self.btn_execute_orders = QtWidgets.QPushButton("📝 Atualizar Ordens")
+        self.btn_execute_orders.setToolTip(
+            "Aplica as quantidades-alvo simuladas nas caixas de texto das moedas para acompanhar a carteira após rebalancear."
+        )
+        self.btn_execute_orders.clicked.connect(self.simulate_order_execution)
+
         self.btn_refresh_online = QtWidgets.QPushButton("🔄 Atualizar Saldo")
         self.btn_refresh_online.clicked.connect(
             lambda: self._load_links_and_fetch(offline=False)
@@ -599,9 +897,17 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         self.btn_save_snapshot.setObjectName("primaryBtn")
         self.btn_save_snapshot.clicked.connect(self.save_current_snapshot)
 
-        btn_grid.addWidget(self.btn_apply_sim, 0, 0, 1, 2)
-        btn_grid.addWidget(self.btn_refresh_online, 1, 0)
-        btn_grid.addWidget(self.btn_save_snapshot, 1, 1)
+        self.btn_view_progress = QtWidgets.QPushButton("📈 Visualizar Progresso")
+        self.btn_view_progress.setToolTip(
+            "Exibe gráfico temporal da evolução da carteira a partir da retirada de ZEC."
+        )
+        self.btn_view_progress.clicked.connect(self.show_progress_chart)
+
+        btn_grid.addWidget(self.btn_apply_sim, 0, 0)
+        btn_grid.addWidget(self.btn_execute_orders, 0, 1)
+        btn_grid.addWidget(self.btn_refresh_online, 1, 0, 1, 2)
+        btn_grid.addWidget(self.btn_save_snapshot, 2, 0)
+        btn_grid.addWidget(self.btn_view_progress, 2, 1)
         left_layout.addLayout(btn_grid)
 
         # Box: Meta de Acumulação (abaixo dos botões Atualizar Saldo / Salvar Registro)
@@ -1396,6 +1702,27 @@ class CoverRebalancerWindow(QtWidgets.QMainWindow):
         self.status_bar.showMessage(
             "Quantidades atualizadas com a simulação pós-rebalanceamento."
         )
+
+    def show_progress_chart(self):
+        """Abre modal com os gráficos temporais do comportamento da carteira a partir de 03/11."""
+        history = core.load_history()
+        # Início a partir do dia 03/11/2026
+        filtered = [
+            h
+            for h in history
+            if isinstance(h, dict)
+            and h.get("data_hora", "")[:10] >= "2026-11-03"
+            and float(h.get("total_bnb", 0.0)) > 0
+        ]
+        if not filtered:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Visualizar Progresso",
+                "Ainda não há registros salvos da carteira a partir de 03/11/2026.",
+            )
+            return
+        dlg = ProgressDialog(filtered, parent=self)
+        dlg.exec_()
 
     def refresh_history_table(self):
         history = core.load_history()
